@@ -154,6 +154,9 @@ void RemoteMasterEngine::updateSettings(const RemoteMasterSettings& settings) {
         std::lock_guard lock(m_mutex);
         m_settings = settings;
         updateParsedEmergencyShortcut();
+        m_cachedForegroundHwnd = nullptr;
+        m_cachedIsRemote = false;
+        m_cachedProcessName.clear();
         saveSettings();
     }
     LOG_INFO("[RemoteMaster] Settings updated");
@@ -164,6 +167,10 @@ void RemoteMasterEngine::resetDefaults() {
         std::lock_guard lock(m_mutex);
         m_settings = RemoteMasterSettings{};
         updateParsedEmergencyShortcut();
+        m_cachedForegroundHwnd = nullptr;
+        m_cachedIsRemote = false;
+        m_cachedProcessName.clear();
+        m_lastActiveRemoteHwnd = nullptr;
         saveSettings();
     }
     if (m_imeSanitized.load(std::memory_order_relaxed)) {
@@ -262,18 +269,26 @@ bool RemoteMasterEngine::isRemoteProcessOrClass(
 
     // 匹配进程名
     for (const auto& tp : targetProcesses) {
-        if (tp.empty()) continue;
-        std::string tpLower = toLowerAscii(tp);
+        std::string tpTrimmed = tp;
+        while (!tpTrimmed.empty() && std::isspace(static_cast<unsigned char>(tpTrimmed.front()))) tpTrimmed.erase(tpTrimmed.begin());
+        while (!tpTrimmed.empty() && std::isspace(static_cast<unsigned char>(tpTrimmed.back()))) tpTrimmed.pop_back();
+        if (tpTrimmed.empty()) continue;
+        std::string tpLower = toLowerAscii(tpTrimmed);
         std::wstring tpWLower(tpLower.begin(), tpLower.end());
-        if (pLower == tpWLower || (tpWLower.find(L'.') == std::wstring::npos && pLower == tpWLower + L".exe")) {
+        if (pLower == tpWLower ||
+            (tpWLower.find(L'.') == std::wstring::npos && pLower == tpWLower + L".exe") ||
+            (pLower.find(L'.') == std::wstring::npos && pLower + L".exe" == tpWLower)) {
             return true;
         }
     }
 
     // 匹配类名 (支持子串包含与精确匹配)
     for (const auto& tc : targetClasses) {
-        if (tc.empty()) continue;
-        std::string tcLower = toLowerAscii(tc);
+        std::string tcTrimmed = tc;
+        while (!tcTrimmed.empty() && std::isspace(static_cast<unsigned char>(tcTrimmed.front()))) tcTrimmed.erase(tcTrimmed.begin());
+        while (!tcTrimmed.empty() && std::isspace(static_cast<unsigned char>(tcTrimmed.back()))) tcTrimmed.pop_back();
+        if (tcTrimmed.empty()) continue;
+        std::string tcLower = toLowerAscii(tcTrimmed);
         std::wstring tcWLower(tcLower.begin(), tcLower.end());
         if (cLower == tcWLower || cLower.find(tcWLower) != std::wstring::npos) {
             return true;
@@ -345,11 +360,14 @@ ParsedEmergencyShortcut RemoteMasterEngine::parseEmergencyShortcut(const std::st
     size_t start = 0;
     while (start <= str.size()) {
         const size_t end = str.find('+', start);
-        tokens.push_back(str.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        std::string tok = str.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+        if (!tok.empty()) tokens.push_back(std::move(tok));
         if (end == std::string::npos) break;
         start = end + 1;
     }
-    if (tokens.empty() || tokens.back().empty()) return res;
+    if (tokens.empty()) return res;
 
     for (size_t i = 0; i + 1 < tokens.size(); ++i) {
         std::string token = toLowerAscii(tokens[i]);
@@ -373,6 +391,19 @@ ParsedEmergencyShortcut RemoteMasterEngine::parseEmergencyShortcut(const std::st
         {"insert", VK_INSERT}, {"ins", VK_INSERT},
         {"pause", VK_PAUSE}, {"break", VK_PAUSE},
         {"printscreen", VK_SNAPSHOT},
+        {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT},
+        {"num0", VK_NUMPAD0}, {"num1", VK_NUMPAD1}, {"num2", VK_NUMPAD2}, {"num3", VK_NUMPAD3},
+        {"num4", VK_NUMPAD4}, {"num5", VK_NUMPAD5}, {"num6", VK_NUMPAD6}, {"num7", VK_NUMPAD7},
+        {"num8", VK_NUMPAD8}, {"num9", VK_NUMPAD9},
+        {"numpad0", VK_NUMPAD0}, {"numpad1", VK_NUMPAD1}, {"numpad2", VK_NUMPAD2}, {"numpad3", VK_NUMPAD3},
+        {"numpad4", VK_NUMPAD4}, {"numpad5", VK_NUMPAD5}, {"numpad6", VK_NUMPAD6}, {"numpad7", VK_NUMPAD7},
+        {"numpad8", VK_NUMPAD8}, {"numpad9", VK_NUMPAD9},
+        {"num+", VK_ADD}, {"numadd", VK_ADD},
+        {"num-", VK_SUBTRACT}, {"numsubtract", VK_SUBTRACT},
+        {"num*", VK_MULTIPLY}, {"nummultiply", VK_MULTIPLY},
+        {"num/", VK_DIVIDE}, {"numdivide", VK_DIVIDE},
+        {"num.", VK_DECIMAL}, {"numdecimal", VK_DECIMAL},
+        {"numenter", VK_RETURN},
         {"f1", VK_F1}, {"f2", VK_F2}, {"f3", VK_F3}, {"f4", VK_F4},
         {"f5", VK_F5}, {"f6", VK_F6}, {"f7", VK_F7}, {"f8", VK_F8},
         {"f9", VK_F9}, {"f10", VK_F10}, {"f11", VK_F11}, {"f12", VK_F12},
@@ -434,13 +465,19 @@ bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessN
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0 || pid == GetCurrentProcessId()) return false;
+    if (pid == 0 || pid == GetCurrentProcessId()) {
+        std::lock_guard lock(m_mutex);
+        m_cachedForegroundHwnd = hwnd;
+        m_cachedIsRemote = false;
+        m_cachedProcessName.clear();
+        return false;
+    }
 
     std::wstring processImage;
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (hProcess) {
-        wchar_t pathBuf[MAX_PATH] = {0};
-        DWORD size = MAX_PATH;
+        wchar_t pathBuf[1024] = {0};
+        DWORD size = 1024;
         if (QueryFullProcessImageNameW(hProcess, 0, pathBuf, &size)) {
             processImage = pathBuf;
         }
@@ -460,13 +497,15 @@ bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessN
 
     bool matched = isRemoteProcessOrClass(processImage, classBuf, targets, classes);
 
-    // 提取纯进程名用于显示
+    // 提取纯进程名用于显示（若受限无法读取进程名但类名命中，则回退为类名）
     std::string procUtf8;
     if (!processImage.empty()) {
         std::wstring pOnly = processImage;
         size_t slash = pOnly.find_last_of(L"\\/");
         if (slash != std::wstring::npos) pOnly = pOnly.substr(slash + 1);
         procUtf8 = wstringToUtf8(pOnly);
+    } else if (matched && classBuf[0] != L'\0') {
+        procUtf8 = wstringToUtf8(classBuf);
     }
 
     {
@@ -517,8 +556,14 @@ void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
 }
 
 void RemoteMasterEngine::onRemoteForegroundLost(HWND hwnd) {
-    // 关键状态重置：离开远控前台时，必须无条件复位 Win 键与右 Ctrl 状态机，防止修饰键滞留粘滞
-    m_winKeyDown.store(false, std::memory_order_relaxed);
+    // 关键状态重置：离开远控前台时，必须无条件复位 Win 键与右 Ctrl 状态机
+    // 若离开前台时 Win 键处于按下态，主动向原远控窗口派发 KEYUP，消除远端 Win 键卡死粘滞隐患
+    if (m_winKeyDown.exchange(false, std::memory_order_relaxed)) {
+        if (hwnd && IsWindow(hwnd)) {
+            LPARAM lp = makeKeyLParam(0x5B, true, true, false);
+            PostMessageW(hwnd, WM_KEYUP, VK_LWIN, lp);
+        }
+    }
     m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
     m_otherKeyPressedSinceRightCtrl.store(false, std::memory_order_relaxed);
 
@@ -528,6 +573,10 @@ void RemoteMasterEngine::onRemoteForegroundLost(HWND hwnd) {
         ActivateKeyboardLayout(m_savedHkl, KLF_SETFORPROCESS);
         if (hwnd && IsWindow(hwnd)) {
             PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(m_savedHkl));
+        }
+        HWND curFg = GetForegroundWindow();
+        if (curFg && curFg != hwnd && IsWindow(curFg)) {
+            PostMessageW(curFg, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(m_savedHkl));
         }
         m_savedHkl = nullptr;
     }
@@ -542,7 +591,7 @@ void RemoteMasterEngine::postKeyToTarget(HWND fg, UINT msg, DWORD vk, DWORD scan
     DWORD threadId = GetWindowThreadProcessId(fg, nullptr);
     if (threadId) {
         GUITHREADINFO gti = { sizeof(GUITHREADINFO) };
-        if (GetGUIThreadInfo(threadId, &gti) && gti.hwndFocus) {
+        if (GetGUIThreadInfo(threadId, &gti) && gti.hwndFocus && IsWindow(gti.hwndFocus)) {
             target = gti.hwndFocus;
         }
     }
@@ -557,6 +606,22 @@ void RemoteMasterEngine::postKeyToTarget(HWND fg, UINT msg, DWORD vk, DWORD scan
 }
 
 void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
+    // 自动寻址远控目标：优先显式指定 -> 当前活跃远控窗口 -> 最近一次活跃远控窗口 -> 当前前台窗口
+    HWND target = targetHwnd ? targetHwnd : m_activeRemoteHwnd.load(std::memory_order_relaxed);
+    if (!target) {
+        std::lock_guard lock(m_mutex);
+        if (m_lastActiveRemoteHwnd && IsWindow(m_lastActiveRemoteHwnd)) {
+            target = m_lastActiveRemoteHwnd;
+        }
+    }
+    if (!target) target = GetForegroundWindow();
+
+    // 若从托盘或设置中心点击急救，主动将远控窗口切回前台以确保 SendInput 生效
+    if (target && IsWindow(target) && target != GetForegroundWindow()) {
+        SetForegroundWindow(target);
+        Sleep(20);
+    }
+
     // 1. 原子化 SendInput 发送 11 组 KEYUP 与 MOUSEUP 硬件脉冲
     auto inputs = buildEmergencyFlushInputs();
     if (!inputs.empty()) {
@@ -564,15 +629,12 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
     }
 
     // 2. 向前台远控画布精准直投 8 组修饰键的 WM_KEYUP / WM_SYSKEYUP
-    HWND target = targetHwnd ? targetHwnd : m_activeRemoteHwnd.load(std::memory_order_relaxed);
-    if (!target) target = GetForegroundWindow();
-
     if (target && IsWindow(target)) {
         HWND canvas = target;
         DWORD threadId = GetWindowThreadProcessId(target, nullptr);
         if (threadId) {
             GUITHREADINFO gti = { sizeof(GUITHREADINFO) };
-            if (GetGUIThreadInfo(threadId, &gti) && gti.hwndFocus) {
+            if (GetGUIThreadInfo(threadId, &gti) && gti.hwndFocus && IsWindow(gti.hwndFocus)) {
                 canvas = gti.hwndFocus;
             }
         }
@@ -602,14 +664,23 @@ void RemoteMasterEngine::flushModifiers(HWND targetHwnd) {
             }
         }
 
-        // 鼠标按键弹起直投
-        PostMessageW(canvas, WM_LBUTTONUP, 0, 0);
-        PostMessageW(canvas, WM_RBUTTONUP, 0, 0);
-        PostMessageW(canvas, WM_MBUTTONUP, 0, 0);
+        // 鼠标按键弹起直投（基于当前鼠标屏幕物理坐标精准映射至客户区坐标，避免 (0,0) 误点击）
+        POINT pt{0, 0};
+        GetCursorPos(&pt);
+        POINT ptCanvas = pt;
+        ScreenToClient(canvas, &ptCanvas);
+        LPARAM lpCanvas = MAKELPARAM(ptCanvas.x, ptCanvas.y);
+
+        PostMessageW(canvas, WM_LBUTTONUP, 0, lpCanvas);
+        PostMessageW(canvas, WM_RBUTTONUP, 0, lpCanvas);
+        PostMessageW(canvas, WM_MBUTTONUP, 0, lpCanvas);
         if (canvas != target) {
-            PostMessageW(target, WM_LBUTTONUP, 0, 0);
-            PostMessageW(target, WM_RBUTTONUP, 0, 0);
-            PostMessageW(target, WM_MBUTTONUP, 0, 0);
+            POINT ptTarget = pt;
+            ScreenToClient(target, &ptTarget);
+            LPARAM lpTarget = MAKELPARAM(ptTarget.x, ptTarget.y);
+            PostMessageW(target, WM_LBUTTONUP, 0, lpTarget);
+            PostMessageW(target, WM_RBUTTONUP, 0, lpTarget);
+            PostMessageW(target, WM_MBUTTONUP, 0, lpTarget);
         }
     }
 
@@ -693,7 +764,10 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
     if (!fg) return false;
 
     bool isRemote = m_mockActive ? m_mockIsRemote : checkWindowIsRemote(fg);
-    if (!isRemote) return false;
+    if (!isRemote) {
+        m_winKeyDown.store(false, std::memory_order_relaxed);
+        return false;
+    }
 
     // 1. Win 键单独按下与弹起 (VK_LWIN / VK_RWIN)
     if (vk == VK_LWIN || vk == VK_RWIN) {
@@ -739,14 +813,27 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
         }
     }
 
-    // 4. Ctrl + Shift + Esc 直通远端任务管理器
+    // 4. Ctrl + Shift + Esc / Ctrl + Esc 直通远端
     if (vk == VK_ESCAPE) {
         bool hasCtrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         bool hasShift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool hasAlt = ((data.flags & LLKHF_ALTDOWN) != 0) || ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
+
+        // Ctrl + Shift + Esc: 远端任务管理器 (拦截本地任务管理器)
         if (hasCtrl && hasShift) {
             if (isKeyDown) {
                 postKeyToTarget(fg, WM_KEYDOWN, VK_ESCAPE, data.scanCode, false);
-                return true; // 拦截本地任务管理器
+                return true;
+            } else if (isKeyUp) {
+                postKeyToTarget(fg, WM_KEYUP, VK_ESCAPE, data.scanCode, false);
+                return true;
+            }
+        }
+        // Ctrl + Esc: 远端开始菜单 (拦截本地开始菜单弹出)
+        if (hasCtrl && !hasShift && !hasAlt) {
+            if (isKeyDown) {
+                postKeyToTarget(fg, WM_KEYDOWN, VK_ESCAPE, data.scanCode, false);
+                return true;
             } else if (isKeyUp) {
                 postKeyToTarget(fg, WM_KEYUP, VK_ESCAPE, data.scanCode, false);
                 return true;
@@ -779,6 +866,7 @@ void CALLBACK RemoteMasterEngine::winEventProc(
         {
             std::lock_guard lock(engine.m_mutex);
             engine.m_activeRemoteProcess = procName;
+            engine.m_lastActiveRemoteHwnd = hwnd;
         }
         if (!prevIsRemote || prevHwnd != hwnd) {
             engine.onRemoteForegroundGained(hwnd);

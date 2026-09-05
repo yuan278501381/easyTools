@@ -123,11 +123,14 @@ std::optional<HotkeyDef> HotkeyDef::fromString(const std::string& str) {
     size_t start = 0;
     while (start <= str.size()) {
         const size_t end = str.find('+', start);
-        tokens.push_back(str.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        std::string tok = str.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+        if (!tok.empty()) tokens.push_back(std::move(tok));
         if (end == std::string::npos) break;
         start = end + 1;
     }
-    if (tokens.empty() || tokens.back().empty()) return std::nullopt;
+    if (tokens.empty()) return std::nullopt;
 
     for (size_t i = 0; i + 1 < tokens.size(); ++i) {
         std::string token = tokens[i];

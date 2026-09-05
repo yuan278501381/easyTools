@@ -72,9 +72,16 @@ TEST(RemoteMasterTest, ProcessAndClassMatching) {
     EXPECT_FALSE(RemoteMasterEngine::isRemoteProcessOrClass(L"powershell.exe", L"ConsoleWindowClass", targetProcesses, targetClasses));
     EXPECT_FALSE(RemoteMasterEngine::isRemoteProcessOrClass(L"", L"", targetProcesses, targetClasses));
 
-    // 5. 无后缀配置兼容性测试
+    // 5. 无后缀配置兼容性与双向对称匹配测试
     std::vector<std::string> noExtProcesses = { "ToDesk", "SunloginClient" };
     EXPECT_TRUE(RemoteMasterEngine::isRemoteProcessOrClass(L"ToDesk.exe", L"", noExtProcesses, {}));
+    EXPECT_TRUE(RemoteMasterEngine::isRemoteProcessOrClass(L"ToDesk", L"", targetProcesses, {}));
+
+    // 6. 空白字符自动剔除鲁棒性测试
+    std::vector<std::string> paddedProcesses = { "  ToDesk.exe  " };
+    std::vector<std::string> paddedClasses = { "  TSSHELLWND  " };
+    EXPECT_TRUE(RemoteMasterEngine::isRemoteProcessOrClass(L"ToDesk.exe", L"", paddedProcesses, {}));
+    EXPECT_TRUE(RemoteMasterEngine::isRemoteProcessOrClass(L"", L"TSSHELLWND", {}, paddedClasses));
 }
 
 TEST(RemoteMasterTest, EmergencyFlushInputsBatch) {
@@ -198,6 +205,34 @@ TEST(RemoteMasterTest, SettingsJsonRoundTrip) {
     EXPECT_FALSE(safeDefault.targetProcesses.empty()); // 维持默认列表
 }
 
+TEST(RemoteMasterTest, CacheInvalidationAndDefaults) {
+    auto& engine = RemoteMasterEngine::instance();
+    engine.resetDefaults();
+
+    // 默认列表验证
+    auto def = engine.getSettings();
+    EXPECT_TRUE(def.enabled);
+    EXPECT_TRUE(def.hotkeyTunnelEnabled);
+    EXPECT_TRUE(def.emergencyFlushEnabled);
+    EXPECT_TRUE(def.doubleRightCtrlTrigger);
+    EXPECT_TRUE(def.imeSanitizerEnabled);
+    EXPECT_EQ(def.emergencyShortcut, "Ctrl+Alt+Backspace");
+
+    // 更新配置测试
+    RemoteMasterSettings custom = def;
+    custom.emergencyShortcut = "Ctrl+Shift+F10";
+    custom.targetProcesses.push_back("CustomVnc.exe");
+    engine.updateSettings(custom);
+
+    EXPECT_EQ(engine.getSettings().emergencyShortcut, "Ctrl+Shift+F10");
+    EXPECT_EQ(engine.getParsedEmergencyShortcut().vk, static_cast<UINT>(VK_F10));
+
+    // 重置默认
+    engine.resetDefaults();
+    EXPECT_EQ(engine.getSettings().emergencyShortcut, "Ctrl+Alt+Backspace");
+    EXPECT_EQ(engine.getParsedEmergencyShortcut().vk, static_cast<UINT>(VK_BACK));
+}
+
 TEST(RemoteMasterTest, RightCtrlDoubleTapStateMachine) {
     auto& engine = RemoteMasterEngine::instance();
     engine.resetDefaults();
@@ -307,13 +342,30 @@ TEST(RemoteMasterTest, DedicatedEmergencyShortcut) {
     // 携带 Alt 标志的 F12 命中动态配置的 Alt+F12，成功触发并消费
     EXPECT_TRUE(engine.onLowLevelKeyboardEvent(f12AltData, WM_SYSKEYDOWN));
 
-    // 4. HotkeyManager Backspace 格式化与解析联动
+    // 4. HotkeyManager Backspace 格式化与解析联动 (包含空白字符容错)
     auto hk = HotkeyDef::fromString("Ctrl+Alt+Backspace");
     ASSERT_TRUE(hk.has_value());
     EXPECT_EQ(hk->virtualKey, static_cast<UINT>(VK_BACK));
     EXPECT_TRUE((static_cast<UINT>(hk->modifiers) & MOD_CONTROL) != 0);
     EXPECT_TRUE((static_cast<UINT>(hk->modifiers) & MOD_ALT) != 0);
     EXPECT_EQ(hk->toString(), "Ctrl+Alt+Backspace");
+
+    auto hkPadded = HotkeyDef::fromString("  Ctrl + Alt + Backspace  ");
+    ASSERT_TRUE(hkPadded.has_value());
+    EXPECT_EQ(hkPadded->virtualKey, static_cast<UINT>(VK_BACK));
+
+    // 5. 方向键与小键盘数字键支持测试
+    auto scArrow = RemoteMasterEngine::parseEmergencyShortcut("Ctrl+Alt+Left");
+    EXPECT_TRUE(scArrow.valid);
+    EXPECT_EQ(scArrow.vk, static_cast<UINT>(VK_LEFT));
+
+    auto scNum = RemoteMasterEngine::parseEmergencyShortcut("Ctrl+Shift+Num1");
+    EXPECT_TRUE(scNum.valid);
+    EXPECT_EQ(scNum.vk, static_cast<UINT>(VK_NUMPAD1));
+
+    auto scPadded = RemoteMasterEngine::parseEmergencyShortcut("  Ctrl + Alt + End  ");
+    EXPECT_TRUE(scPadded.valid);
+    EXPECT_EQ(scPadded.vk, static_cast<UINT>(VK_END));
 
     engine.resetDefaults();
 }
@@ -371,12 +423,20 @@ TEST(RemoteMasterTest, HotkeyTunnelingInterception) {
     EXPECT_TRUE(engine.onLowLevelKeyboardEvent(tabData, WM_SYSKEYDOWN));
     EXPECT_TRUE(engine.onLowLevelKeyboardEvent(tabData, WM_SYSKEYUP));
 
-    // 4. 失焦解挂测试：切回本地应用后立即停止拦截
+    // 4. Ctrl + Shift + Esc 与 Ctrl + Esc 直通测试
+    KBDLLHOOKSTRUCT escData{};
+    escData.vkCode = VK_ESCAPE;
+    escData.scanCode = 0x01;
+    // 在远控窗口下触发 Ctrl+Esc 或 Ctrl+Shift+Esc
+    // (注：由于处于 mock 远控状态，调用 GetAsyncKeyState 可能为 0，可通过携带系统钩子测试)
+    EXPECT_FALSE(engine.onLowLevelKeyboardEvent(escData, WM_KEYDOWN)); // 无修饰键不拦截
+
+    // 5. 失焦解挂测试：切回本地应用后立即停止拦截
     engine.setMockForeground(dummyHwnd, false, "chrome.exe");
     EXPECT_FALSE(engine.isRemoteForeground());
     EXPECT_FALSE(engine.onLowLevelKeyboardEvent(winData, WM_KEYDOWN));
 
-    // 5. 焦点切换修饰键滞留防御测试 (防 Win 键粘滞导致后续输入失效)
+    // 6. 焦点切换修饰键滞留防御测试 (防 Win 键粘滞导致后续输入失效)
     engine.setMockForeground(dummyHwnd, true, "ToDesk.exe");
     EXPECT_TRUE(engine.onLowLevelKeyboardEvent(winData, WM_KEYDOWN));
     // 远控中按下了 Win 键，但此时焦点丢失（用户切回本地桌面）

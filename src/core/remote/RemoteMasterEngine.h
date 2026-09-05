@@ -43,6 +43,7 @@ struct EASYCORE_API RemoteMasterSettings {
         "AnyDesk.exe",
         "RustDesk.exe",
         "mstsc.exe",
+        "msrdc.exe",
         "TeamViewer.exe",
         "vncviewer.exe",
         "tv_w32.exe",
@@ -53,6 +54,7 @@ struct EASYCORE_API RemoteMasterSettings {
     std::vector<std::string> targetClasses = {
         "TSSHELLWND",
         "IHWindowClass",
+        "OPContainerClass",
         "SunloginMain",
         "SunloginRemote",
         "ToDesk_Main",
@@ -182,6 +184,7 @@ private:
 
     std::atomic<bool> m_isRemoteForeground{false};
     std::atomic<HWND> m_activeRemoteHwnd{nullptr};
+    HWND m_lastActiveRemoteHwnd = nullptr;
     std::string m_activeRemoteProcess;
 
     // 输入法智能脱敏状态
