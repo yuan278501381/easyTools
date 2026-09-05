@@ -27,6 +27,7 @@ import {
   FolderSymlink,
   Sparkles,
   Keyboard,
+  Cast,
 } from 'lucide-react';
 import './Sidebar.css';
 import { type NavId } from '../pages/registry';
@@ -55,6 +56,7 @@ const CORE_TOOL_NAV_ITEMS: NavItem[] = [
   { id: 'keycast', icon: <Keyboard size={20} strokeWidth={2.2} />, labelKey: 'nav.keycast', requiresPlugin: 'keycast' },
   { id: 'spotlight', icon: <Sparkles size={20} strokeWidth={2.2} />, labelKey: 'nav.spotlight' },
   { id: 'dialog_enhancer', icon: <FolderSymlink size={20} strokeWidth={2.2} />, labelKey: 'nav.dialog_enhancer', requiresPlugin: 'dialogenhancer' },
+  { id: 'remote_boost', icon: <Cast size={20} strokeWidth={2.2} />, labelKey: 'nav.remote_boost' },
 ];
 
 const INSIGHT_NAV_ITEMS: NavItem[] = [

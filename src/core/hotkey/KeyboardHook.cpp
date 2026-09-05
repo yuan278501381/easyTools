@@ -72,6 +72,11 @@ void KeyboardHook::setKeyInterceptor(std::function<bool(DWORD vkCode, WPARAM wPa
     m_keyInterceptor = std::move(interceptor);
 }
 
+void KeyboardHook::setLowLevelKeyInterceptor(std::function<bool(const KBDLLHOOKSTRUCT& data, WPARAM wParam)> interceptor) {
+    std::lock_guard lock(m_callbackMutex);
+    m_lowLevelKeyInterceptor = std::move(interceptor);
+}
+
 void KeyboardHook::setKeyboardActivityCallback(std::function<void(DWORD vkCode, WPARAM wParam)> cb) {
     std::lock_guard lock(m_callbackMutex);
     m_activityCallback = std::move(cb);
@@ -94,6 +99,16 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 }
                 if (actCallback) {
                     actCallback(data->vkCode, wParam);
+                }
+
+                // 优先执行底层原始按键拦截器（例如 RemoteMaster 硬件扫描码级沉浸直通）
+                std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> lowLevelInterceptor;
+                {
+                    std::lock_guard lock(self.m_callbackMutex);
+                    lowLevelInterceptor = self.m_lowLevelKeyInterceptor;
+                }
+                if (lowLevelInterceptor && lowLevelInterceptor(*data, wParam)) {
+                    return 1; // 消费并拦截按键
                 }
 
                 // 优先执行自定义按键拦截器（例如 QuickLook 空格预览）

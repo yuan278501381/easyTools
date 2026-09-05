@@ -47,7 +47,8 @@
     "markdown_preview": "Markdown Viewer",
     "keycast": "Keycast",
     "spotlight": "Mouse FX & Highlights",
-    "dialog_enhancer": "Dialog Enhancer"
+    "dialog_enhancer": "Dialog Enhancer",
+    "remote_boost": "Remote Boost"
   },
   "navSubtitle": {
     "stats": "Keystrokes and mouse usage activity",
@@ -66,7 +67,8 @@
     "ai_assistant": "AI translation, explain, and floating dialog window",
     "color_picker": "Pixel magnifier precision color picker & palette manager",
     "clipboard_manager": "Unlimited clipboard history, search and pinned snippets",
-    "markdown_preview": "Spacebar quick look for markdown and code files"
+    "markdown_preview": "Spacebar quick look for markdown and code files",
+    "remote_boost": "Immersive hotkey tunnel, emergency flush & smart IME sanitizing"
   },
   "extension": {
     "statusRunning": "Running",
@@ -1476,7 +1478,10 @@
     "enabled": "Enabled",
     "disabled": "Disabled",
     "restartToApply": "Plugin settings updated",
-    "restartNow": "Restart"
+    "restartNow": "Restart",
+    "pillRemoteBoost": "Remote",
+    "pillRemoteBoostFullDesc": "Remote Boost (Immersive hotkey tunnel & emergency flush)",
+    "emergencyFlush": "Emergency Key Flush"
   },
   "dialog": {
     "title": "File Dialog Enhancer",
@@ -1890,5 +1895,43 @@
     "layout104": "104-Key Full Size",
     "layout87": "87-Key TKL",
     "layout60": "60-Key Compact"
+  },
+  "remoteBoost": {
+    "masterTitle": "Remote Assistant Host Boost",
+    "masterDesc": "Unilateral enhancement on host PC: Immersive system hotkey tunnel, emergency modifier flush, and intelligent IME sanitizing without installing any software on remote machines.",
+    "statusControlling": "Controlling remote canvas:",
+    "statusIdle": "Idle (Operating on local desktop)",
+    "imeSanitizedTooltip": "IME Sanitized",
+    "imePureEnglish": "ENG 0409 Active",
+    "tunnelSectionTitle": "Immersive Remote Hotkey Tunnel",
+    "tunnelSectionSubtitle": "Intercepts local Windows priority consumption on system hotkeys and forwards hardware scancodes to remote canvas",
+    "hotkeyTunnelTitle": "Enable System Hotkey Tunnel",
+    "hotkeyTunnelDesc": "Forwards Win, Win+R, Win+E, Win+D, Win+X, Alt+Tab, Ctrl+Shift+Esc to remote PC without triggering local menus",
+    "interceptedKeysLabel": "Intercepted & Tunneled Keys:",
+    "targetProcessesLabel": "Target Remote Client Processes:",
+    "addProcessPlaceholder": "e.g., CustomRemote.exe",
+    "flushSectionTitle": "Modifier Key Emergency Flush",
+    "flushSectionSubtitle": "Instantly releases stuck Ctrl, Alt, Shift, Win and mouse buttons caused by network latency or focus loss",
+    "emergencyFlushTitle": "Emergency Flush Engine",
+    "emergencyFlushDesc": "Sends atomic 11-channel KEYUP pulses across hardware scancodes to completely flush remote stuck keys",
+    "doubleRightCtrlTitle": "Double-tap Right Ctrl Trigger",
+    "doubleRightCtrlDesc": "Double-tap Right Ctrl within 400ms to immediately fire emergency flush without lifting hands from keyboard",
+    "dedicatedShortcutTitle": "Dedicated Emergency Hotkey",
+    "dedicatedShortcutDesc": "Global emergency shortcut to trigger flush anytime",
+    "flushTestDesc": "Test flush: Emits full-array KEYUP pulses to current window and cleans sticky states",
+    "flushing": "Flushing...",
+    "flushNow": "Flush Now",
+    "imeSectionTitle": "Smart Remote IME Sanitizer",
+    "imeSectionSubtitle": "Prevents local Chinese IME candidate window from obscuring and corrupting remote keyboard input",
+    "imeSanitizerTitle": "Auto Switch to US English on Focus",
+    "imeSanitizerDesc": "Automatically activates pure US English (ENG 0409) when entering remote window; seamlessly restores original IME on blur",
+    "saveFailed": "Failed to save settings",
+    "flushSuccess": "All modifier keys and mouse buttons released",
+    "flushFailed": "Emergency flush failed",
+    "resetSuccess": "Settings restored to defaults",
+    "resetFailed": "Failed to reset settings",
+    "processExists": "Process already in target list",
+    "resetDefaults": "Reset Defaults",
+    "autoSaved": "Auto saved"
   }
 }

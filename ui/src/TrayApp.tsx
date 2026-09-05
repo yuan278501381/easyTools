@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
-import { Settings, Camera, Video, Search, Shield, ShieldCheck, LogOut, RotateCw } from 'lucide-react';
+import { Settings, Camera, Video, Search, Shield, ShieldCheck, LogOut, RotateCw, Zap } from 'lucide-react';
 import { bridgeRequest } from './hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { useAppearance } from './hooks/useAppearance';
@@ -11,6 +11,7 @@ export default function TrayApp() {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const [gesturePaused, setGesturePaused] = useState(false);
+  const [remoteBoostEnabled, setRemoteBoostEnabled] = useState(false);
   const [elevated, setElevated] = useState(false);
   const [elevating, setElevating] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -63,6 +64,9 @@ export default function TrayApp() {
     const settingsRequest = bridgeRequest<{ elevated?: boolean }>('general.getSettings')
       .then((res) => setElevated(Boolean(res?.elevated)))
       .catch(() => {});
+    const remoteRequest = bridgeRequest<{ enabled?: boolean }>('remote.getSettings')
+      .then((res) => setRemoteBoostEnabled(Boolean(res?.enabled)))
+      .catch(() => {});
     const pluginsRequest = bridgeRequest<Array<{ id: string; active: boolean }>>('plugins.getAll')
       .then((plugins) => {
         const active = new Set(plugins.filter((plugin) => plugin.active).map((plugin) => plugin.id));
@@ -77,7 +81,7 @@ export default function TrayApp() {
         }
       })
       .catch(() => {});
-    void Promise.allSettled([settingsRequest, pluginsRequest]).finally(() => {
+    void Promise.allSettled([settingsRequest, pluginsRequest, remoteRequest]).finally(() => {
       refreshInFlightRef.current = false;
     });
   }, []);
@@ -218,18 +222,28 @@ export default function TrayApp() {
   // 框架化判定某项是否处于活跃状态
   const isItemActive = useCallback((item: TrayControlItem): boolean => {
     if (item.getCustomActive) {
-      return item.getCustomActive(activePlugins, { gesturePaused });
+      return item.getCustomActive(activePlugins, { gesturePaused, remoteBoostEnabled });
     }
     if (activePlugins.has(item.pluginId)) return true;
     if (item.aliasPluginIds?.some((id) => activePlugins.has(id))) return true;
     return false;
-  }, [activePlugins, gesturePaused]);
+  }, [activePlugins, gesturePaused, remoteBoostEnabled]);
 
   // 框架化分发点击切换
   const handleToggleItem = async (e: React.MouseEvent, item: TrayControlItem) => {
     e.stopPropagation();
     if (item.id === 'gesture') {
       await toggleGesture(e);
+      return;
+    }
+    if (item.id === 'remote_boost') {
+      const next = !remoteBoostEnabled;
+      setRemoteBoostEnabled(next);
+      try {
+        await bridgeRequest('remote.updateSettings', { enabled: next });
+      } catch {
+        setRemoteBoostEnabled(!next);
+      }
       return;
     }
     await togglePlugin(e, item.pluginId, item.aliasPluginIds);
@@ -343,6 +357,13 @@ export default function TrayApp() {
         <button type="button" className="tray-menu__item" disabled={busy} onClick={() => void handleAction('search')}>
           <Search size={15} className="tray-menu__icon" />
           <span className="tray-menu__label">{t('tray.search', 'File Search')}</span>
+        </button>
+      )}
+
+      {remoteBoostEnabled && (
+        <button type="button" className="tray-menu__item" disabled={busy} onClick={() => void handleAction('emergencyFlush')}>
+          <Zap size={15} className="tray-menu__icon" />
+          <span className="tray-menu__label">{t('tray.emergencyFlush', 'Emergency Key Flush')}</span>
         </button>
       )}
 

@@ -38,6 +38,7 @@ const SearchPage = lazy(() => import('./pages/SearchPage').then((module) => ({ d
 const KeycastPage = lazy(() => import('./pages/KeycastPage').then((module) => ({ default: module.KeycastPage })));
 const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) => ({ default: module.SpotlightPage })));
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
+const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
 const ExtensionPage = lazy(() => import('./pages/ExtensionPage').then((module) => ({ default: module.ExtensionPage })));
 
 type Theme = 'dark' | 'light';
@@ -205,6 +206,7 @@ function App() {
       case 'keycast':         return <KeycastPage />;
       case 'spotlight':       return <SpotlightPage />;
       case 'dialog_enhancer': return <DialogEnhancerPage />;
+      case 'remote_boost':    return <RemoteBoostPage />;
       case 'plugins':         return <PluginsPage initialPlugins={plugins} />;
       case 'general':         return <GeneralPage />;
       case 'about':           return <AboutPage />;

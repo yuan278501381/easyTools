@@ -1,4 +1,4 @@
-﻿#ifndef EASYTOOLS_CORE_HOTKEY_KEYBOARDHOOK_H
+#ifndef EASYTOOLS_CORE_HOTKEY_KEYBOARDHOOK_H
 #define EASYTOOLS_CORE_HOTKEY_KEYBOARDHOOK_H
 
 #include "core/utils/Export.h"
@@ -20,6 +20,7 @@ public:
 
     void setKeycastCallback(std::function<void(const std::string&)> cb);
     void setKeyInterceptor(std::function<bool(DWORD vkCode, WPARAM wParam)> interceptor);
+    void setLowLevelKeyInterceptor(std::function<bool(const KBDLLHOOKSTRUCT& data, WPARAM wParam)> interceptor);
     void setKeyboardActivityCallback(std::function<void(DWORD vkCode, WPARAM wParam)> cb);
     void setPaused(bool paused);
     bool isPaused() const;
@@ -34,6 +35,7 @@ private:
     std::atomic<bool> m_paused{false};
     std::function<void(const std::string&)> m_keycastCallback;
     std::function<bool(DWORD, WPARAM)> m_keyInterceptor;
+    std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> m_lowLevelKeyInterceptor;
     std::function<void(DWORD, WPARAM)> m_activityCallback;
     mutable std::mutex m_callbackMutex;
     DWORD m_pendingModifierVk = 0;

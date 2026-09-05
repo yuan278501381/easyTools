@@ -47,7 +47,8 @@
     "markdown_preview": "Markdown速览",
     "keycast": "按键回显",
     "spotlight": "鼠标演示与特效",
-    "dialog_enhancer": "文件对话框助手"
+    "dialog_enhancer": "文件对话框助手",
+    "remote_boost": "远程协助增强"
   },
   "navSubtitle": {
     "stats": "按键和鼠标活动使用统计",
@@ -66,7 +67,8 @@
     "ai_assistant": "全局划词翻译、代码优化与智能对话悬浮窗",
     "color_picker": "像素级放大镜精准取色与常用调色板管理",
     "clipboard_manager": "无限历史记录、富文本检索与置顶常用语",
-    "markdown_preview": "单按空格快速预览 .md 与代码文件"
+    "markdown_preview": "单按空格快速预览 .md 与代码文件",
+    "remote_boost": "主控端热键直通、修饰键急救与输入法智能脱敏"
   },
   "extension": {
     "statusRunning": "运行中",
@@ -1476,7 +1478,10 @@
     "enabled": "已启用",
     "disabled": "已停用",
     "restartToApply": "插件状态已更新",
-    "restartNow": "立即重启"
+    "restartNow": "立即重启",
+    "pillRemoteBoost": "远控",
+    "pillRemoteBoostFullDesc": "远程协助增强 (沉浸热键直通与急救)",
+    "emergencyFlush": "修饰键急救冲刷"
   },
   "dialog": {
     "title": "文件对话框智能助手",
@@ -1890,5 +1895,43 @@
     "layout104": "104 键全尺寸",
     "layout87": "87 键 TKL",
     "layout60": "60 键紧凑"
+  },
+  "remoteBoost": {
+    "masterTitle": "远程协助主控单边增强",
+    "masterDesc": "我电脑（主控端）的单边增强：沉浸式系统热键直通、修饰键卡死一键急救与输入法智能脱敏，对方电脑无需安装任何软件。",
+    "statusControlling": "正在控制远端画布：",
+    "statusIdle": "空闲 (当前聚焦于本地桌面)",
+    "imeSanitizedTooltip": "输入法已智能脱敏",
+    "imePureEnglish": "纯英文 0409 已激活",
+    "tunnelSectionTitle": "沉浸式系统热键直通",
+    "tunnelSectionSubtitle": "拦截本地 Windows 对系统级保留热键的优先消费，并通过硬件扫描码精准转发给远控窗口",
+    "hotkeyTunnelTitle": "启用系统热键直通",
+    "hotkeyTunnelDesc": "将 Win、Win+R、Win+E、Win+D、Win+X、Alt+Tab、Ctrl+Shift+Esc 等系统键直通至远端，绝不弹出本地开始菜单或运行窗口",
+    "interceptedKeysLabel": "已拦截并直通的核心按键：",
+    "targetProcessesLabel": "已适配的远控客户端进程：",
+    "addProcessPlaceholder": "例如 CustomRemote.exe",
+    "flushSectionTitle": "远程修饰键卡死一键急救",
+    "flushSectionSubtitle": "因网络波动或焦点切换导致远端 Ctrl、Alt、Shift、Win 或鼠标按键黏滞卡死时，一键冲刷归位",
+    "emergencyFlushTitle": "修饰键急救冲刷引擎",
+    "emergencyFlushDesc": "原子级向远端画布连续投递全套 11 路 KEYUP/UP 硬件按键脉冲，瞬间释放所有受困修饰键",
+    "doubleRightCtrlTitle": "双击右 Ctrl 极速盲操触发",
+    "doubleRightCtrlDesc": "400 毫秒内连续双击右 Ctrl 键（VK_RCONTROL）即可瞬时触发急救，双手无需离开主键盘区",
+    "dedicatedShortcutTitle": "全局急救快捷键",
+    "dedicatedShortcutDesc": "随时随地触发修饰键急救释放的备用全局快捷键组合",
+    "flushTestDesc": "立即向当前窗口派发全量 KEYUP 脉冲阵列，验证急救逻辑并释放黏滞键状态",
+    "flushing": "正在急救冲刷...",
+    "flushNow": "立即急救冲刷",
+    "imeSectionTitle": "远控输入法智能脱敏",
+    "imeSectionSubtitle": "防止本地中文输入法候选框在远控窗口内误弹、遮挡画面或破坏远端键盘输入流",
+    "imeSanitizerTitle": "聚焦远控窗口自动切换为纯英文键盘",
+    "imeSanitizerDesc": "进入远控窗口画布时强制切换为系统级纯英文输入环境（ENG 0409）并关闭候选窗；切回本地时无缝恢复原有输入法",
+    "saveFailed": "保存远程增强设置失败",
+    "flushSuccess": "修饰键与鼠标按键已全部重置归位",
+    "flushFailed": "修饰键急救冲刷失败",
+    "resetSuccess": "已恢复远程增强默认配置",
+    "resetFailed": "重置默认配置失败",
+    "processExists": "该进程已在目标列表中",
+    "resetDefaults": "恢复默认配置",
+    "autoSaved": "已自动保存"
   }
 }

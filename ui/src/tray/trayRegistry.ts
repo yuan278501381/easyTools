@@ -10,10 +10,12 @@ import {
   Search,
   Sparkles,
   FolderSymlink,
+  Cast,
 } from 'lucide-react';
 
 export interface TrayExtraState {
   gesturePaused: boolean;
+  remoteBoostEnabled?: boolean;
 }
 
 export interface TrayControlItem {
@@ -105,5 +107,16 @@ export const TRAY_CONTROL_REGISTRY: TrayControlItem[] = [
     fallbackDesc: 'Dialog Enhancer (Instant jump & recent paths in dialogs)',
     icon: FolderSymlink,
     order: 60,
+  },
+  {
+    id: 'remote_boost',
+    pluginId: 'remote_boost',
+    labelKey: 'tray.pillRemoteBoost',
+    fallbackLabel: 'Remote',
+    descKey: 'tray.pillRemoteBoostFullDesc',
+    fallbackDesc: 'Remote Boost (Immersive hotkey tunnel & emergency flush)',
+    icon: Cast,
+    order: 70,
+    getCustomActive: (_activePlugins, { remoteBoostEnabled }) => Boolean(remoteBoostEnabled),
   },
 ];

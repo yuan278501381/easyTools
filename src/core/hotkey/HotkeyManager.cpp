@@ -100,6 +100,7 @@ std::string HotkeyDef::toString() const {
         {VK_HOME, "Home"}, {VK_END, "End"}, {VK_PRIOR, "PageUp"},
         {VK_NEXT, "PageDown"}, {VK_UP, "Up"}, {VK_DOWN, "Down"},
         {VK_LEFT, "Left"}, {VK_RIGHT, "Right"}, {VK_SNAPSHOT, "PrintScreen"},
+        {VK_BACK, "Backspace"},
     };
     if (virtualKey >= VK_F1 && virtualKey <= VK_F24) {
         result += "F" + std::to_string(virtualKey - VK_F1 + 1);
@@ -152,7 +153,7 @@ std::optional<HotkeyDef> HotkeyDef::fromString(const std::string& str) {
         {"Tab", VK_TAB}, {"Delete", VK_DELETE}, {"Insert", VK_INSERT},
         {"Home", VK_HOME}, {"End", VK_END}, {"PageUp", VK_PRIOR}, {"PageDown", VK_NEXT},
         {"Up", VK_UP}, {"Down", VK_DOWN}, {"Left", VK_LEFT}, {"Right", VK_RIGHT},
-        {"PrintScreen", VK_SNAPSHOT},
+        {"PrintScreen", VK_SNAPSHOT}, {"Backspace", VK_BACK}, {"Back", VK_BACK},
     };
 
     if (remaining.size() == 1) {

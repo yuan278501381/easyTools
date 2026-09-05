@@ -18,6 +18,7 @@ export type BuiltinNavId =
   | 'keycast'
   | 'spotlight'
   | 'dialog_enhancer'
+  | 'remote_boost'
   | 'stats'
   | 'about'
   | 'ai_assistant'
@@ -52,6 +53,7 @@ export const PAGE_DEFINITIONS: PageDefinition[] = [
   { id: 'keycast', titleKey: 'nav.keycast', subtitleKey: 'navSubtitle.keycast', category: 'core_tools', requiresPlugin: 'keycast' },
   { id: 'spotlight', titleKey: 'nav.spotlight', subtitleKey: 'navSubtitle.spotlight', category: 'core_tools' },
   { id: 'dialog_enhancer', titleKey: 'nav.dialog_enhancer', subtitleKey: 'navSubtitle.dialog_enhancer', category: 'core_tools', requiresPlugin: 'dialogenhancer' },
+  { id: 'remote_boost', titleKey: 'nav.remote_boost', subtitleKey: 'navSubtitle.remote_boost', category: 'core_tools' },
 
   // ── 洞察与关于 ────────────────────────────────────────────────────────────
   { id: 'stats', titleKey: 'nav.stats', subtitleKey: 'navSubtitle.stats', category: 'insights' },

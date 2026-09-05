@@ -138,7 +138,7 @@ target_include_directories(EasyCore PUBLIC
 )
 target_link_libraries(EasyCore PUBLIC
     spdlog::spdlog nlohmann_json::nlohmann_json sol2::sol2 ${LUA_LIBRARIES} fmt::fmt
-    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus
+    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32
 )
 
 # ── 2. Plugin_Gesture (动态库) ────────────────────────────────────────────────

@@ -74,6 +74,7 @@
 #include "ui/SpotlightOverlay.h"
 #include "ui/WebViewEnvironmentManager.h"
 #include "gesture/GestureInputPolicy.h"
+#include "core/remote/RemoteMasterEngine.h"
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 static constexpr const wchar_t* WINDOW_CLASS_NAME = L"EasyTools_MessageWindow";
@@ -1071,6 +1072,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             easy::core::EventBus::instance().publish(easy::core::ActionToggleRecordingEvent{});
         } else if (action == "pauseGesture") {
             easy::core::EventBus::instance().publish(easy::core::ActionToggleGesturePauseEvent{});
+        } else if (action == "emergencyFlush") {
+            easy::core::RemoteMasterEngine::instance().flushModifiers();
+            return {{"success", true}};
         } else if (action == "restartElevated") {
             easy::core::ConfigManager::instance().set<bool>("/general/runAsAdmin", true);
             if (g_restartLaunchStarted.exchange(true, std::memory_order_acq_rel)) {
@@ -1201,6 +1205,58 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         return {{"success", true}};
     });
 
+    // 5.5. 远程协助主控单边增强引擎 (沉浸热键直通、修饰键急救冲刷、输入法智能脱敏)
+    easy::core::RemoteMasterEngine::instance().initialize();
+    easy::core::KeyboardHook::instance().setLowLevelKeyInterceptor([](const KBDLLHOOKSTRUCT& data, WPARAM wp) -> bool {
+        return easy::core::RemoteMasterEngine::instance().onLowLevelKeyboardEvent(data, wp);
+    });
+
+    easy::core::MessageBridge::instance().registerHandler("remote.getSettings", [](const nlohmann::json&) -> nlohmann::json {
+        return easy::core::RemoteMasterEngine::instance().getSettings().toJson();
+    });
+
+    easy::core::MessageBridge::instance().registerHandler("remote.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
+        auto s = easy::core::RemoteMasterEngine::instance().getSettings();
+        if (params.contains("enabled") && params["enabled"].is_boolean()) s.enabled = params["enabled"].get<bool>();
+        if (params.contains("hotkeyTunnelEnabled") && params["hotkeyTunnelEnabled"].is_boolean()) s.hotkeyTunnelEnabled = params["hotkeyTunnelEnabled"].get<bool>();
+        if (params.contains("emergencyFlushEnabled") && params["emergencyFlushEnabled"].is_boolean()) s.emergencyFlushEnabled = params["emergencyFlushEnabled"].get<bool>();
+        if (params.contains("doubleRightCtrlTrigger") && params["doubleRightCtrlTrigger"].is_boolean()) s.doubleRightCtrlTrigger = params["doubleRightCtrlTrigger"].get<bool>();
+        if (params.contains("imeSanitizerEnabled") && params["imeSanitizerEnabled"].is_boolean()) s.imeSanitizerEnabled = params["imeSanitizerEnabled"].get<bool>();
+        if (params.contains("emergencyShortcut") && params["emergencyShortcut"].is_string()) s.emergencyShortcut = params["emergencyShortcut"].get<std::string>();
+        if (params.contains("targetProcesses") && params["targetProcesses"].is_array()) {
+            s.targetProcesses.clear();
+            for (const auto& item : params["targetProcesses"]) {
+                if (item.is_string()) s.targetProcesses.push_back(item.get<std::string>());
+            }
+        }
+        if (params.contains("targetClasses") && params["targetClasses"].is_array()) {
+            s.targetClasses.clear();
+            for (const auto& item : params["targetClasses"]) {
+                if (item.is_string()) s.targetClasses.push_back(item.get<std::string>());
+            }
+        }
+        easy::core::RemoteMasterEngine::instance().updateSettings(s);
+        return {{"success", true}};
+    });
+
+    easy::core::MessageBridge::instance().registerHandler("remote.emergencyFlush", [](const nlohmann::json&) -> nlohmann::json {
+        easy::core::RemoteMasterEngine::instance().flushModifiers();
+        return {{"success", true}};
+    });
+
+    easy::core::MessageBridge::instance().registerHandler("remote.resetDefaults", [](const nlohmann::json&) -> nlohmann::json {
+        easy::core::RemoteMasterEngine::instance().resetDefaults();
+        return {{"success", true}};
+    });
+
+    easy::core::MessageBridge::instance().registerHandler("remote.getState", [](const nlohmann::json&) -> nlohmann::json {
+        return {
+            {"isRemoteForeground", easy::core::RemoteMasterEngine::instance().isRemoteForeground()},
+            {"imeSanitized", easy::core::RemoteMasterEngine::instance().isImeSanitized()},
+            {"activeProcess", easy::core::RemoteMasterEngine::instance().getActiveRemoteProcess()}
+        };
+    });
+
     // 6. 键盘与鼠标核心输入总线
     easy::core::KeyboardHook::instance().install();
     easy::core::MouseHook::instance().install();
@@ -1306,6 +1362,7 @@ void shutdownSubsystems() {
     easy::ui::ToastOverlay::instance().shutdown();
     easy::ui::SpotlightOverlay::instance().shutdown();
     easy::ui::WebViewEnvironmentManager::instance().shutdown();
+    easy::core::RemoteMasterEngine::instance().shutdown();
     easy::core::KeyboardHook::instance().uninstall();
     easy::core::MouseHook::instance().uninstall();
     easy::core::StatsManager::instance().shutdown();
