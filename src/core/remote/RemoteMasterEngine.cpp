@@ -88,33 +88,75 @@ RemoteMasterEngine& RemoteMasterEngine::instance() {
 }
 
 bool RemoteMasterEngine::initialize() {
-    std::lock_guard lock(m_mutex);
-    loadSettings();
+    {
+        std::lock_guard lock(m_mutex);
+        loadSettings();
+    }
 
     // 注册 Windows 前台窗口变更通知钩子 (异步解耦，不阻塞用户消息)
-    if (!m_foregroundHook) {
-        m_foregroundHook = SetWinEventHook(
+    bool needHook = false;
+    {
+        std::lock_guard lock(m_mutex);
+        needHook = (m_foregroundHook == nullptr);
+    }
+    if (needHook) {
+        HWINEVENTHOOK hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
             nullptr,
             &RemoteMasterEngine::winEventProc,
             0, 0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
         );
-        if (!m_foregroundHook) {
+        if (hook) {
+            HWINEVENTHOOK redundantHook = nullptr;
+            {
+                std::lock_guard lock(m_mutex);
+                if (m_foregroundHook == nullptr) {
+                    m_foregroundHook = hook;
+                } else {
+                    redundantHook = hook;
+                }
+            }
+            if (redundantHook) {
+                UnhookWinEvent(redundantHook);
+            }
+        } else {
             LOG_WARN("[RemoteMaster] Failed to install EVENT_SYSTEM_FOREGROUND hook, fallback to polling");
         }
     }
 
     // 立即侦测当前前台窗口状态
-    HWND curFg = GetForegroundWindow();
+    HWND curFg = m_mockActive ? m_mockHwnd : GetForegroundWindow();
+    bool isRemote = false;
+    std::string procName;
     if (curFg) {
-        std::string procName;
-        bool isRemote = checkWindowIsRemote(curFg, &procName);
-        m_isRemoteForeground.store(isRemote, std::memory_order_relaxed);
-        m_activeRemoteHwnd.store(isRemote ? curFg : nullptr, std::memory_order_relaxed);
-        m_activeRemoteProcess = isRemote ? procName : "";
-        if (isRemote) {
+        if (m_mockActive) {
+            isRemote = m_mockIsRemote;
+            procName = m_mockProcessName;
+        } else {
+            isRemote = checkWindowIsRemote(curFg, &procName);
+        }
+    }
+
+    bool prevIsRemote = m_isRemoteForeground.exchange(isRemote, std::memory_order_relaxed);
+    HWND prevHwnd = m_activeRemoteHwnd.exchange(isRemote ? curFg : nullptr, std::memory_order_relaxed);
+
+    if (isRemote) {
+        {
+            std::lock_guard lock(m_mutex);
+            m_activeRemoteProcess = procName;
+            m_lastActiveRemoteHwnd = curFg;
+        }
+        if (!prevIsRemote || prevHwnd != curFg) {
             onRemoteForegroundGained(curFg);
+        }
+    } else {
+        {
+            std::lock_guard lock(m_mutex);
+            m_activeRemoteProcess.clear();
+        }
+        if (prevIsRemote) {
+            onRemoteForegroundLost(prevHwnd);
         }
     }
 
@@ -123,15 +165,15 @@ bool RemoteMasterEngine::initialize() {
 }
 
 void RemoteMasterEngine::shutdown() {
+    HWINEVENTHOOK hook = nullptr;
+    HWND activeHwnd = nullptr;
+    bool wasImeSanitized = false;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_foregroundHook) {
-            UnhookWinEvent(m_foregroundHook);
-            m_foregroundHook = nullptr;
-        }
-        if (m_imeSanitized.load(std::memory_order_relaxed)) {
-            onRemoteForegroundLost(m_activeRemoteHwnd.load(std::memory_order_relaxed));
-        }
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        hook = m_foregroundHook;
+        m_foregroundHook = nullptr;
+        activeHwnd = m_activeRemoteHwnd.load(std::memory_order_relaxed);
+        wasImeSanitized = m_imeSanitized.load(std::memory_order_relaxed);
         m_isRemoteForeground.store(false, std::memory_order_relaxed);
         m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
         m_activeRemoteProcess.clear();
@@ -139,6 +181,14 @@ void RemoteMasterEngine::shutdown() {
         m_cachedIsRemote = false;
         m_cachedProcessName.clear();
     }
+
+    if (hook) {
+        UnhookWinEvent(hook);
+    }
+    if (wasImeSanitized) {
+        onRemoteForegroundLost(activeHwnd);
+    }
+
     // 冷路径退场释放内存
     easy::core::WinUtils::trimWorkingSet();
     LOG_INFO("[RemoteMaster] Shutdown completed and working set trimmed");
@@ -529,11 +579,13 @@ void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
     if (m_imeSanitized.load(std::memory_order_relaxed)) return;
 
     DWORD threadId = hwnd ? GetWindowThreadProcessId(hwnd, nullptr) : 0;
-    if (threadId) {
-        m_savedHkl = GetKeyboardLayout(threadId);
+    HKL currentHkl = threadId ? GetKeyboardLayout(threadId) : nullptr;
+    if (!currentHkl) {
+        currentHkl = GetKeyboardLayout(0);
     }
-    if (!m_savedHkl) {
-        m_savedHkl = GetKeyboardLayout(0);
+    {
+        std::lock_guard lock(m_mutex);
+        m_savedHkl = currentHkl;
     }
 
     // 切换至纯美式英文 (00000409)
@@ -569,16 +621,22 @@ void RemoteMasterEngine::onRemoteForegroundLost(HWND hwnd) {
 
     if (!m_imeSanitized.load(std::memory_order_relaxed)) return;
 
-    if (m_savedHkl) {
-        ActivateKeyboardLayout(m_savedHkl, KLF_SETFORPROCESS);
+    HKL hklToRestore = nullptr;
+    {
+        std::lock_guard lock(m_mutex);
+        hklToRestore = m_savedHkl;
+        m_savedHkl = nullptr;
+    }
+
+    if (hklToRestore) {
+        ActivateKeyboardLayout(hklToRestore, KLF_SETFORPROCESS);
         if (hwnd && IsWindow(hwnd)) {
-            PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(m_savedHkl));
+            PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
         }
         HWND curFg = GetForegroundWindow();
         if (curFg && curFg != hwnd && IsWindow(curFg)) {
-            PostMessageW(curFg, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(m_savedHkl));
+            PostMessageW(curFg, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
         }
-        m_savedHkl = nullptr;
     }
     m_imeSanitized.store(false, std::memory_order_relaxed);
     LOG_INFO("[RemoteMaster] IME Sanitizer: Restored previous input layout");

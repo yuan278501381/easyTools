@@ -479,3 +479,129 @@ TEST(RemoteMasterTest, ImeSanitizerLifecycle) {
     engine.clearMockForeground();
     engine.resetDefaults();
 }
+
+TEST(RemoteMasterTest, InitializeReentrancyAndForegroundDetection) {
+    auto& engine = RemoteMasterEngine::instance();
+    engine.resetDefaults();
+
+    // 1. 验证 initialize() 在真实系统前台窗口环境下执行绝不抛出 std::system_error (EDEADLK 自死锁)
+    EXPECT_NO_THROW({
+        bool ok = engine.initialize();
+        EXPECT_TRUE(ok);
+    });
+
+    // 2. 验证多次连续调用 initialize() 具备完全的幂等性与重入安全性
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_NO_THROW({
+            bool ok = engine.initialize();
+            EXPECT_TRUE(ok);
+        });
+    }
+
+    // 3. 验证存在 Mock 远控前台窗口时的重入与状态保持
+    HWND dummyRemote = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x12345678));
+    engine.setMockForeground(dummyRemote, true, "ToDesk.exe");
+    EXPECT_TRUE(engine.isRemoteForeground());
+    EXPECT_EQ(engine.getActiveRemoteProcess(), "ToDesk.exe");
+
+    EXPECT_NO_THROW({
+        bool ok = engine.initialize();
+        EXPECT_TRUE(ok);
+    });
+    EXPECT_TRUE(engine.isRemoteForeground());
+    EXPECT_EQ(engine.getActiveRemoteProcess(), "ToDesk.exe");
+
+    // 4. 验证 Mock 本地普通窗口时的重入
+    HWND dummyLocal = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x87654321));
+    engine.setMockForeground(dummyLocal, false, "notepad.exe");
+    EXPECT_FALSE(engine.isRemoteForeground());
+
+    EXPECT_NO_THROW({
+        bool ok = engine.initialize();
+        EXPECT_TRUE(ok);
+    });
+    EXPECT_FALSE(engine.isRemoteForeground());
+
+    engine.clearMockForeground();
+
+    // 5. 验证创建并聚焦实际本地原生窗口时的 initialize() 侦测路径与重入锁安全
+    HWND testWnd = CreateWindowExW(
+        0, L"STATIC", L"EasyToolsTestWnd", WS_POPUP,
+        0, 0, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr
+    );
+    if (testWnd) {
+        SetForegroundWindow(testWnd);
+        Sleep(10);
+        EXPECT_NO_THROW({
+            bool ok = engine.initialize();
+            EXPECT_TRUE(ok);
+        });
+        // 自身进程的窗口绝不应被判定为远控
+        EXPECT_FALSE(engine.isRemoteForeground());
+        DestroyWindow(testWnd);
+    }
+
+    // 6. 验证关闭与重新初始化的全生命周期
+    engine.shutdown();
+    EXPECT_NO_THROW({
+        bool ok = engine.initialize();
+        EXPECT_TRUE(ok);
+    });
+
+    // 7. 验证远控前台失焦转为非远控时 initialize() 能够正确触发清理与输入法还原
+    engine.setMockForeground(dummyRemote, true, "ToDesk.exe");
+    EXPECT_TRUE(engine.isRemoteForeground());
+    EXPECT_TRUE(engine.isImeSanitized());
+
+    // 切换至 Mock 本地窗口并再次 initialize()，确认状态正确转变为非远控并释放输入法脱敏
+    engine.setMockForeground(dummyLocal, false, "notepad.exe");
+    EXPECT_NO_THROW({
+        bool ok = engine.initialize();
+        EXPECT_TRUE(ok);
+    });
+    EXPECT_FALSE(engine.isRemoteForeground());
+    EXPECT_FALSE(engine.isImeSanitized());
+
+    engine.clearMockForeground();
+
+    // 8. 验证多线程高并发重入调用 (含 initialize、shutdown、updateSettings 与状态查询) 绝对无死锁
+    std::atomic<bool> stopWorkers{false};
+    std::vector<std::thread> workers;
+    workers.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        workers.emplace_back([&engine, &stopWorkers, i]() {
+            while (!stopWorkers.load(std::memory_order_relaxed)) {
+                if (i == 0) {
+                    bool ok = engine.initialize();
+                    EXPECT_TRUE(ok);
+                } else if (i == 1) {
+                    engine.shutdown();
+                } else if (i == 2) {
+                    auto s = engine.getSettings();
+                    s.hotkeyTunnelEnabled = !s.hotkeyTunnelEnabled;
+                    engine.updateSettings(s);
+                } else {
+                    auto s = engine.getSettings();
+                    auto hkl = engine.getSavedHkl();
+                    auto proc = engine.getActiveRemoteProcess();
+                    (void)s;
+                    (void)hkl;
+                    (void)proc;
+                }
+                std::this_thread::yield();
+            }
+        });
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stopWorkers.store(true, std::memory_order_relaxed);
+    for (auto& t : workers) {
+        if (t.joinable()) t.join();
+    }
+
+    // 恢复干净初始化状态
+    engine.initialize();
+    engine.clearMockForeground();
+    engine.resetDefaults();
+}
+

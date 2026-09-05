@@ -177,7 +177,7 @@ private:
         DWORD dwmsEventTime
     );
 
-    mutable std::mutex m_mutex;
+    mutable std::recursive_mutex m_mutex;
     RemoteMasterSettings m_settings;
     ParsedEmergencyShortcut m_parsedEmergencyShortcut;
     HWINEVENTHOOK m_foregroundHook = nullptr;

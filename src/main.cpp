@@ -1206,7 +1206,13 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     });
 
     // 5.5. 远程协助主控单边增强引擎 (沉浸热键直通、修饰键急救冲刷、输入法智能脱敏)
-    easy::core::RemoteMasterEngine::instance().initialize();
+    try {
+        easy::core::RemoteMasterEngine::instance().initialize();
+    } catch (const std::exception& e) {
+        LOG_ERROR("[RemoteMaster] Failed to initialize: {}", e.what());
+    } catch (...) {
+        LOG_ERROR("[RemoteMaster] Failed to initialize: unknown exception");
+    }
     easy::core::KeyboardHook::instance().setLowLevelKeyInterceptor([](const KBDLLHOOKSTRUCT& data, WPARAM wp) -> bool {
         return easy::core::RemoteMasterEngine::instance().onLowLevelKeyboardEvent(data, wp);
     });
