@@ -2661,6 +2661,10 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] TrayWindow: WebView2 渲染环境已就绪",
             "[{}] TrayWindow: WebView2 render environment ready"
         }},
+        {"手势触发掩码已同步: 0x{:08X}", {
+            "[{}] 手势触发掩码已同步: 0x{:08X}",
+            "[{}] Gesture trigger mask synchronized: 0x{:08X}"
+        }},
     };
     return catalog;
 }

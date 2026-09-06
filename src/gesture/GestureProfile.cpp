@@ -116,7 +116,9 @@ void GestureProfile::setTriggerState(const std::string& triggerKey, TriggerModeS
 void GestureProfile::setAllTriggerStates(TriggerModeState state) {
     static const std::vector<std::string> kKnownTriggers = {
         "right", "middle", "left", "xbutton1", "xbutton2",
-        "edge_top_slide", "edge_top_wheel", "edge_top_right", "edge_top_middle", "edge_top_left"
+        "edge_top_slide", "edge_bottom_slide", "edge_left_slide", "edge_right_slide",
+        "edge_top_wheel", "edge_bottom_wheel",
+        "edge_top_right", "edge_top_middle", "edge_top_left"
     };
 
     if (state == TriggerModeState::Default) {

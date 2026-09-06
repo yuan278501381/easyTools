@@ -23,22 +23,64 @@
 
 namespace easy::gesture {
 
-/// 当前触发模式下，这个按下事件是否应当开始一笔手势。
-inline bool isGestureTriggerDown(MouseEventType type, TriggerMode mode) noexcept {
+/// 左键手势触发合法性校验：仅当对应边缘有效激活或明确开启左键手势时才允许拦截
+inline bool isLeftButtonGestureAllowed(ScreenEdgeZone activeEdge, uint8_t modifiers, uint32_t triggerMask) noexcept {
+    (void)modifiers;
+    if (activeEdge != ScreenEdgeZone::None) {
+        return true;
+    }
+    return (triggerMask & GestureTriggerMask::Left) != 0;
+}
+
+/// 生成符合规范的完整手势编码: [EdgePrefix+][ModPrefix+][TriggerPrefix+]bareCode
+inline std::string formatFullGestureCode(ScreenEdgeZone edge, uint8_t modifiers,
+                                         MouseEventType triggerDown,
+                                         std::string_view bareCode) {
+    std::string code;
+    code.reserve(32);
+    if (edge == ScreenEdgeZone::Top)         code += "TopEdge+";
+    else if (edge == ScreenEdgeZone::Bottom) code += "BottomEdge+";
+    else if (edge == ScreenEdgeZone::Left)   code += "LeftEdge+";
+    else if (edge == ScreenEdgeZone::Right)  code += "RightEdge+";
+
+    if (modifiers & MOUSE_MOD_CTRL)  code += "Ctrl+";
+    if (modifiers & MOUSE_MOD_ALT)   code += "Alt+";
+    if (modifiers & MOUSE_MOD_SHIFT) code += "Shift+";
+
+    if (triggerDown == MouseEventType::MiddleDown)      code += "Middle+";
+    else if (triggerDown == MouseEventType::X1Down)    code += "X1+";
+    else if (triggerDown == MouseEventType::X2Down)    code += "X2+";
+    else if (triggerDown == MouseEventType::LeftDown)  code += "Left+";
+
+    code.append(bareCode.data(), bareCode.size());
+    return code;
+}
+
+/// 当前触发模式与触发掩码下，这个按下事件是否应当开始一笔手势。
+inline bool isGestureTriggerDown(MouseEventType type, TriggerMode mode,
+                                 uint32_t triggerMask = GestureTriggerMask::AllTriggers,
+                                 ScreenEdgeZone edgeZone = ScreenEdgeZone::None) noexcept {
     if (type == MouseEventType::RightDown) {
+        if (triggerMask != GestureTriggerMask::AllTriggers && (triggerMask & GestureTriggerMask::Right) == 0) return false;
         return mode == TriggerMode::RightOnly || mode == TriggerMode::Both || mode == TriggerMode::All;
     }
     if (type == MouseEventType::MiddleDown) {
+        if (triggerMask != GestureTriggerMask::AllTriggers && (triggerMask & GestureTriggerMask::Middle) == 0) return false;
         return mode == TriggerMode::MiddleOnly || mode == TriggerMode::Both || mode == TriggerMode::All;
     }
     if (type == MouseEventType::X1Down) {
+        if (triggerMask != GestureTriggerMask::AllTriggers && (triggerMask & GestureTriggerMask::X1) == 0) return false;
         return mode == TriggerMode::Both || mode == TriggerMode::All || mode == TriggerMode::X1Only;
     }
     if (type == MouseEventType::X2Down) {
+        if (triggerMask != GestureTriggerMask::AllTriggers && (triggerMask & GestureTriggerMask::X2) == 0) return false;
         return mode == TriggerMode::Both || mode == TriggerMode::All || mode == TriggerMode::X2Only;
     }
     if (type == MouseEventType::LeftDown) {
-        return true; // 边缘或带修饰键的左键按下
+        if (triggerMask == GestureTriggerMask::AllTriggers && edgeZone == ScreenEdgeZone::None) {
+            return true; // 兼容旧单测无掩码传参
+        }
+        return isLeftButtonGestureAllowed(edgeZone, 0, triggerMask);
     }
     return false;
 }

@@ -128,6 +128,12 @@ public:
     /// 保存全部状态到配置文件
     bool saveToConfig();
 
+    /// 同步全生命周期触发掩码到底层鼠标钩子
+    void syncTriggerMask();
+
+    /// 根据当前 Profile 状态表计算综合触发掩码
+    uint32_t computeTriggerMask() const;
+
 private:
     GestureEngine();
     GestureEngine(const GestureEngine&) = delete;

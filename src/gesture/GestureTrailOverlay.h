@@ -157,6 +157,9 @@ private:
     /// 释放 D2D 资源。调用方必须已持有 m_renderMutex。
     void releaseD2DResourcesLocked();
 
+    /// 确保 D2D 笔触样式就绪（设备无关资源，双重保险防平整裁切）
+    bool ensureStrokeStyleLocked();
+
     /// 专用高优先级异步渲染循环 (独立持有 HWND 并驱动 DirectComposition)
     void renderLoop(std::stop_token stopToken, HANDLE readyEvent);
 

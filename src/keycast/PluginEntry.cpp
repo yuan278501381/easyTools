@@ -27,9 +27,6 @@ public:
         easy::core::KeyboardHook::instance().setKeycastKeyInfoCallback([](const easy::core::KeycastKeyInfo& info) {
             KeycastOverlay::instance().pushKey(info);
         });
-        easy::core::KeyboardHook::instance().setKeycastCallback([](const std::string& sequence) {
-            KeycastOverlay::instance().pushKey(sequence);
-        });
 
         // 订阅全局主题与主题色变更事件
         m_themeSubscription = easy::core::EventBus::instance().subscribe<easy::core::ThemeChangedEvent>([](const easy::core::ThemeChangedEvent&) {

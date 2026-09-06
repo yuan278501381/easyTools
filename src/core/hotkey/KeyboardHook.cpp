@@ -192,8 +192,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                             if (info.shouldDisplay) {
                                 if (keycastKeyInfoCallback) {
                                     keycastKeyInfoCallback(info);
-                                }
-                                if (keycastCallback) {
+                                } else if (keycastCallback) {
                                     keycastCallback(info.rawKey);
                                 }
                             }
@@ -230,8 +229,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
                                 if (keycastKeyInfoCallback) {
                                     keycastKeyInfoCallback(modInfo);
-                                }
-                                if (keycastCallback) {
+                                } else if (keycastCallback) {
                                     keycastCallback(modName);
                                 }
                             }

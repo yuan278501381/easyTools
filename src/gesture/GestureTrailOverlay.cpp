@@ -805,15 +805,16 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
     constexpr int kGrid = 256;
     constexpr int kPad = 96;
     constexpr int kMin = 512;
+    constexpr int kScreenMargin = 64; // 允许表面向屏幕外扩展呼吸空间，彻底消除边界裁剪
     left = snapDown(left - kPad, kGrid);
     top = snapDown(top - kPad, kGrid);
     right = snapUp(right + kPad, kGrid);
     bottom = snapUp(bottom + kPad, kGrid);
 
-    left = (std::max)(left, m_virtualX);
-    top = (std::max)(top, m_virtualY);
-    right = (std::min)(right, m_virtualX + m_virtualW);
-    bottom = (std::min)(bottom, m_virtualY + m_virtualH);
+    left = (std::max)(left, m_virtualX - kScreenMargin);
+    top = (std::max)(top, m_virtualY - kScreenMargin);
+    right = (std::min)(right, m_virtualX + m_virtualW + kScreenMargin);
+    bottom = (std::min)(bottom, m_virtualY + m_virtualH + kScreenMargin);
 
     auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
                                   int boundBegin, int boundEnd) {
@@ -821,8 +822,8 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
         end = (std::min)(boundEnd, begin + minExtent);
         begin = (std::max)(boundBegin, end - minExtent);
     };
-    ensureMinimumExtent(left, right, kMin, m_virtualX, m_virtualX + m_virtualW);
-    ensureMinimumExtent(top, bottom, kMin, m_virtualY, m_virtualY + m_virtualH);
+    ensureMinimumExtent(left, right, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
+    ensureMinimumExtent(top, bottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
 
     const int neededW = (std::max)(1, right - left);
     const int neededH = (std::max)(1, bottom - top);
@@ -1076,6 +1077,26 @@ void GestureTrailOverlay::releaseCompositorLocked() {
 // Direct2D 资源管理
 // ─────────────────────────────────────────────────────────────────────────────
 
+bool GestureTrailOverlay::ensureStrokeStyleLocked() {
+    if (m_strokeStyle) return true;
+    if (!m_d2dFactory) {
+        D2D1_FACTORY_OPTIONS options{};
+        HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, options, m_d2dFactory.GetAddressOf());
+        if (FAILED(hr) || !m_d2dFactory) return false;
+    }
+    D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_ROUND,
+        D2D1_CAP_STYLE_ROUND,
+        D2D1_CAP_STYLE_ROUND,
+        D2D1_LINE_JOIN_ROUND,
+        10.0f,
+        D2D1_DASH_STYLE_SOLID,
+        0.0f
+    );
+    HRESULT hr = m_d2dFactory->CreateStrokeStyle(strokeProps, nullptr, 0, m_strokeStyle.GetAddressOf());
+    return SUCCEEDED(hr) && m_strokeStyle;
+}
+
 bool GestureTrailOverlay::createD2DResources() {
     if (m_renderTarget && m_memoryDC && m_memoryBitmap && m_lineBrush && m_textBorderBrush) return true;
 
@@ -1141,17 +1162,7 @@ bool GestureTrailOverlay::createD2DResources() {
     m_renderTarget->SetDpi(96.0f, 96.0f);
 
     // 笔触样式 (使线段更平滑，具有圆润笔头与圆角拐弯)
-    D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
-        D2D1_CAP_STYLE_ROUND,
-        D2D1_CAP_STYLE_ROUND,
-        D2D1_CAP_STYLE_ROUND,
-        D2D1_LINE_JOIN_ROUND,
-        10.0f,
-        D2D1_DASH_STYLE_SOLID,
-        0.0f
-    );
-    hr = m_d2dFactory->CreateStrokeStyle(strokeProps, nullptr, 0, m_strokeStyle.GetAddressOf());
-    if (FAILED(hr)) return fail();
+    if (!ensureStrokeStyleLocked()) return fail();
 
     applyThemeColorsLocked();
     m_themeDirty.store(false, std::memory_order_release);
@@ -1230,7 +1241,7 @@ void GestureTrailOverlay::releaseD2DResourcesLocked() {
     m_lineBrush.Reset();
     m_textFormat.Reset();
     m_textScale = 0.0f;
-    m_strokeStyle.Reset();
+    // Note: m_strokeStyle is a factory-created device-independent resource and is preserved
     m_toastTarget.Reset();
     m_renderTarget.Reset();
 // Factories are preserved across memory trims for zero-recreation failure
@@ -1312,6 +1323,8 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
         return D2D1::Point2F(points[idx].x - m_originX, points[idx].y - m_originY);
     };
 
+    ensureStrokeStyleLocked();
+
     if (points.size() >= 2 && m_d2dFactory) {
         ComPtr<ID2D1PathGeometry> linePath;
         if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(linePath.GetAddressOf())) && linePath) {
@@ -1355,12 +1368,32 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
             }
         }
 
+        // 起点圆头笔刷与发光增强 (Start Cap & Glow)，彻底消除起点平整直角裁切
+        const float startR = (std::max)(m_style.lineWidth * m_dpiScale * 0.55f, 3.0f);
+        const float outlineW = clampTrailOutlineWidth(m_style.outlineWidth) * m_dpiScale;
+        if (glowBrush) {
+            glowBrush->SetOpacity(0.25f * fadeAlpha);
+            rt->FillEllipse(
+                D2D1::Ellipse(getPt(0), startR * 2.2f, startR * 2.2f),
+                glowBrush.Get());
+        }
+        if (outlineBrush && outlineW > 0.0f) {
+            rt->FillEllipse(
+                D2D1::Ellipse(getPt(0), startR + outlineW, startR + outlineW),
+                outlineBrush.Get());
+        }
+        if (lineBrush) {
+            rt->FillEllipse(
+                D2D1::Ellipse(getPt(0), startR, startR),
+                lineBrush.Get());
+        }
+
+        // 终点头部能量晶体 (End Head Crystal)
         ID2D1SolidColorBrush* activeHead = (isRecognized || points.size() < 4)
             ? headCoreBrush.Get()
             : lineBrush.Get();
         if (activeHead) {
             const float headR = (std::max)(m_style.lineWidth * m_dpiScale * 0.55f, 3.0f);
-            const float outlineW = clampTrailOutlineWidth(m_style.outlineWidth) * m_dpiScale;
             if (outlineBrush && outlineW > 0.0f) {
                 rt->FillEllipse(
                     D2D1::Ellipse(getPt(points.size() - 1), headR + outlineW, headR + outlineW),
@@ -1368,6 +1401,26 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
             }
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(points.size() - 1), headR, headR), activeHead);
+        }
+    } else if (points.size() == 1) {
+        // 单点起始能量点渲染：按下瞬间即刻呈现圆润微光，杜绝白板延迟与直角切面
+        const float startR = (std::max)(m_style.lineWidth * m_dpiScale * 0.55f, 3.0f);
+        const float outlineW = clampTrailOutlineWidth(m_style.outlineWidth) * m_dpiScale;
+        if (glowBrush) {
+            glowBrush->SetOpacity(0.28f * fadeAlpha);
+            rt->FillEllipse(
+                D2D1::Ellipse(getPt(0), startR * 2.2f, startR * 2.2f),
+                glowBrush.Get());
+        }
+        if (outlineBrush && outlineW > 0.0f) {
+            rt->FillEllipse(
+                D2D1::Ellipse(getPt(0), startR + outlineW, startR + outlineW),
+                outlineBrush.Get());
+        }
+        if (lineBrush) {
+            rt->FillEllipse(
+                D2D1::Ellipse(getPt(0), startR, startR),
+                lineBrush.Get());
         }
     }
 }
@@ -1536,12 +1589,13 @@ bool GestureTrailOverlay::render() {
     const int toastCenterY = toastWork.top +
         static_cast<int>(static_cast<float>(toastWork.bottom - toastWork.top) * 0.82f);
 
+    constexpr int kSafetyMargin = 32;
     int left = INT_MAX, top = INT_MAX, right = INT_MIN, bottom = INT_MIN;
     for (const auto& p : points) {
-        left = (std::min)(left, static_cast<int>(p.x));
-        top = (std::min)(top, static_cast<int>(p.y));
-        right = (std::max)(right, static_cast<int>(p.x) + 1);
-        bottom = (std::max)(bottom, static_cast<int>(p.y) + 1);
+        left = (std::min)(left, static_cast<int>(p.x) - kSafetyMargin);
+        top = (std::min)(top, static_cast<int>(p.y) - kSafetyMargin);
+        right = (std::max)(right, static_cast<int>(p.x) + 1 + kSafetyMargin);
+        bottom = (std::max)(bottom, static_cast<int>(p.y) + 1 + kSafetyMargin);
     }
     if (!fitSurface(left, top, right, bottom)) return false;
 

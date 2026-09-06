@@ -54,6 +54,30 @@ enum class ScreenEdgeZone : uint8_t {
     Right = 4     // 屏幕右边缘
 };
 
+/// 手势全局原子触发掩码 (精准控制各按键与边缘滑动/滚轮触发权限)
+namespace GestureTriggerMask {
+    static constexpr uint32_t None            = 0;
+    static constexpr uint32_t Right           = 1u << 0;
+    static constexpr uint32_t Middle          = 1u << 1;
+    static constexpr uint32_t Left            = 1u << 2;
+    static constexpr uint32_t X1              = 1u << 3;
+    static constexpr uint32_t X2              = 1u << 4;
+    static constexpr uint32_t EdgeTopSlide    = 1u << 5;
+    static constexpr uint32_t EdgeBottomSlide = 1u << 6;
+    static constexpr uint32_t EdgeLeftSlide   = 1u << 7;
+    static constexpr uint32_t EdgeRightSlide  = 1u << 8;
+    static constexpr uint32_t EdgeTopWheel    = 1u << 9;
+    static constexpr uint32_t EdgeBottomWheel = 1u << 10;
+    static constexpr uint32_t EdgeTopRight    = 1u << 11;
+    static constexpr uint32_t EdgeTopMiddle   = 1u << 12;
+    static constexpr uint32_t EdgeTopLeft     = 1u << 13;
+
+    static constexpr uint32_t AnyEdgeSlide = EdgeTopSlide | EdgeBottomSlide | EdgeLeftSlide | EdgeRightSlide;
+    static constexpr uint32_t AnyEdgeWheel = EdgeTopWheel | EdgeBottomWheel;
+    static constexpr uint32_t AnyEdge = AnyEdgeSlide | AnyEdgeWheel | EdgeTopRight | EdgeTopMiddle | EdgeTopLeft;
+    static constexpr uint32_t AllTriggers = 0xFFFFFFFFu;
+}
+
 /// 鼠标事件数据（从钩子回调中采集）
 struct MouseEvent {
     MouseEventType type;
@@ -106,6 +130,13 @@ public:
     void setTriggerButton(MouseEventType downEvent);
     TriggerMode triggerMode() const { return m_configuredTriggerMode.load(std::memory_order_relaxed); }
 
+    /// 设置并原子同步当前激活的手势触发掩码
+    void setActiveTriggerMask(uint32_t mask) noexcept { m_activeTriggerMask.store(mask, std::memory_order_release); }
+    uint32_t activeTriggerMask() const noexcept { return m_activeTriggerMask.load(std::memory_order_relaxed); }
+
+    /// 获取经过当前掩码过滤校验的有效屏幕边缘区域（未开启的边缘一律返回 ScreenEdgeZone::None）
+    ScreenEdgeZone getActiveScreenEdgeZone(POINT pt, MouseEventType type = MouseEventType::Move) const;
+
     /// 从无锁环形队列批量获取待处理事件
     std::vector<MouseEvent> drainEvents(size_t maxCount = 64);
 
@@ -135,6 +166,9 @@ private:
     std::atomic<TriggerMode> m_configuredTriggerMode{TriggerMode::Both};
     std::atomic<MouseEventType> m_configuredTriggerDown{MouseEventType::RightDown};
     std::atomic<MouseEventType> m_activeTriggerDown{MouseEventType::RightDown};
+    std::atomic<uint32_t> m_activeTriggerMask{
+        GestureTriggerMask::Right | GestureTriggerMask::EdgeTopSlide
+    };
 
     HWND m_cachedForegroundWindow = nullptr;
     uint8_t m_cachedModifiers = 0;

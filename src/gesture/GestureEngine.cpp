@@ -98,6 +98,7 @@ bool GestureEngine::start() {
         return false;
     }
     hook.setPaused(m_paused.load());
+    syncTriggerMask();
     installForegroundWatch();
 
     // 初始化手势轨迹覆盖层
@@ -314,6 +315,7 @@ void GestureEngine::setTriggerButton(const std::string& button) {
         m_triggerUp = MouseEventType::RightUp;
         MouseHook::instance().setTriggerMode(TriggerMode::RightOnly);
     }
+    syncTriggerMask();
     LOG_INFO("手势触发按钮已设置: {}", triggerButton());
 }
 
@@ -366,8 +368,11 @@ void GestureEngine::setMinSegmentDistance(int px) {
 }
 
 void GestureEngine::setProfile(const std::string& name, const GestureProfile& profile) {
-    std::unique_lock lock(m_profileMutex);
-    m_profiles.insert_or_assign(name, profile);
+    {
+        std::unique_lock lock(m_profileMutex);
+        m_profiles.insert_or_assign(name, profile);
+    }
+    syncTriggerMask();
     LOG_INFO("设置手势配置集: name={}, 手势数={}", name, profile.getMappings().size());
 }
 
@@ -391,8 +396,15 @@ std::vector<GestureProfile> GestureEngine::getProfiles() const {
 }
 
 bool GestureEngine::removeProfile(const std::string& name) {
-    std::unique_lock lock(m_profileMutex);
-    return m_profiles.erase(name) > 0;
+    bool removed = false;
+    {
+        std::unique_lock lock(m_profileMutex);
+        removed = m_profiles.erase(name) > 0;
+    }
+    if (removed) {
+        syncTriggerMask();
+    }
+    return removed;
 }
 
 void GestureEngine::setRecognizerConfig(const RecognizerConfig& config) {
@@ -419,7 +431,8 @@ bool GestureEngine::onMouseEvent(const MouseEvent& event) {
 
         switch (m_state.load()) {
             case GestureState::Idle:
-                if (isGestureTriggerDown(event.type, MouseHook::instance().triggerMode())) {
+                if (isGestureTriggerDown(event.type, MouseHook::instance().triggerMode(),
+                                         MouseHook::instance().activeTriggerMask(), event.edgeZone)) {
                     // 每次触发键按下 = 一次新的用户操作, 开启全新 TraceId 贯穿整条链路
                     m_gestureTraceId = easy::core::TraceId::begin();
 
@@ -655,24 +668,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
 
                 std::string liveLabel;
                 if (!dirs.empty()) {
-                    std::string edgePrefix;
-                    if (m_gestureEdgeZone == ScreenEdgeZone::Top)         edgePrefix = "TopEdge+";
-                    else if (m_gestureEdgeZone == ScreenEdgeZone::Bottom) edgePrefix = "BottomEdge+";
-                    else if (m_gestureEdgeZone == ScreenEdgeZone::Left)   edgePrefix = "LeftEdge+";
-                    else if (m_gestureEdgeZone == ScreenEdgeZone::Right)  edgePrefix = "RightEdge+";
-
-                    std::string modPrefix;
-                    if (m_gestureModifiers & MOUSE_MOD_CTRL)  modPrefix += "Ctrl+";
-                    if (m_gestureModifiers & MOUSE_MOD_ALT)   modPrefix += "Alt+";
-                    if (m_gestureModifiers & MOUSE_MOD_SHIFT) modPrefix += "Shift+";
-
-                    std::string triggerPrefix;
-                    if (m_activeTriggerDown == MouseEventType::MiddleDown) triggerPrefix = "Middle+";
-                    else if (m_activeTriggerDown == MouseEventType::X1Down) triggerPrefix = "X1+";
-                    else if (m_activeTriggerDown == MouseEventType::X2Down) triggerPrefix = "X2+";
-                    else if (m_activeTriggerDown == MouseEventType::LeftDown) triggerPrefix = "Left+";
-
-                    const std::string fullCode = edgePrefix + triggerPrefix + modPrefix + bareCode;
+                    const std::string fullCode = formatFullGestureCode(m_gestureEdgeZone, m_gestureModifiers, m_activeTriggerDown, bareCode);
                     std::optional<GestureAction> action;
                     if (m_activeProfile) {
                         action = lookupGestureAction(m_activeProfile, m_fallbackProfile, fullCode, bareCode);
@@ -791,24 +787,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     }
 
     // 生成带边缘与修饰键前缀的手势编码 (如 "TopEdge+D"、"Middle+L"、"X1+R"、"Ctrl+L"、"Alt+D-R")
-    std::string edgePrefix;
-    if (m_gestureEdgeZone == ScreenEdgeZone::Top)         edgePrefix = "TopEdge+";
-    else if (m_gestureEdgeZone == ScreenEdgeZone::Bottom) edgePrefix = "BottomEdge+";
-    else if (m_gestureEdgeZone == ScreenEdgeZone::Left)   edgePrefix = "LeftEdge+";
-    else if (m_gestureEdgeZone == ScreenEdgeZone::Right)  edgePrefix = "RightEdge+";
-
-    std::string modPrefix;
-    if (m_gestureModifiers & MOUSE_MOD_CTRL)  modPrefix += "Ctrl+";
-    if (m_gestureModifiers & MOUSE_MOD_ALT)   modPrefix += "Alt+";
-    if (m_gestureModifiers & MOUSE_MOD_SHIFT) modPrefix += "Shift+";
-
-    std::string triggerPrefix;
-    if (m_activeTriggerDown == MouseEventType::MiddleDown) triggerPrefix = "Middle+";
-    else if (m_activeTriggerDown == MouseEventType::X1Down) triggerPrefix = "X1+";
-    else if (m_activeTriggerDown == MouseEventType::X2Down) triggerPrefix = "X2+";
-    else if (m_activeTriggerDown == MouseEventType::LeftDown) triggerPrefix = "Left+";
-
-    std::string fullCode = edgePrefix + triggerPrefix + modPrefix + result->code;  // 完整手势编码
+    std::string fullCode = formatFullGestureCode(m_gestureEdgeZone, m_gestureModifiers, m_activeTriggerDown, result->code);
     std::string bareCode = result->code;                                           // 无前缀的纯方向编码
 
     LOG_INFO("手势识别成功: code={}, fullCode={}, arrows={}, 点数={}, 距离={:.0f}px",
@@ -1097,6 +1076,7 @@ void GestureEngine::loadFromConfig() {
         std::unique_lock lock(m_profileMutex);
         m_profiles = std::move(loadedProfiles);
     }
+    syncTriggerMask();
     LOG_INFO("从配置加载手势配置集, 数量={}", loadedCount);
 
     // 加载作用域规则
@@ -1137,6 +1117,64 @@ bool GestureEngine::saveToConfig() {
     if (saved) LOG_INFO("手势配置已保存");
     else LOG_ERROR("手势配置持久化失败");
     return saved;
+}
+
+uint32_t GestureEngine::computeTriggerMask() const {
+    std::shared_lock lock(m_profileMutex);
+
+    const auto mode = MouseHook::instance().triggerMode();
+
+    auto itDefault = m_profiles.find("default");
+    const GestureProfile* defaultProf = (itDefault != m_profiles.end()) ? &itDefault->second : nullptr;
+
+    auto isTriggerEnabled = [&](const std::string& key, bool defaultVal) -> bool {
+        // 1. 如果任何配置集显式启用了该触发方式，底层钩子必须放行该按键/边缘
+        for (const auto& [name, prof] : m_profiles) {
+            if (prof.getTriggerState(key) == TriggerModeState::Enabled) {
+                return true;
+            }
+        }
+        // 2. 如果默认配置集显式禁用了该触发方式，则禁用
+        if (defaultProf && defaultProf->getTriggerState(key) == TriggerModeState::Disabled) {
+            return false;
+        }
+        // 3. 否则根据默认值判定
+        return defaultVal;
+    };
+
+    uint32_t mask = GestureTriggerMask::None;
+
+    const bool defaultRight = (mode == TriggerMode::RightOnly || mode == TriggerMode::Both || mode == TriggerMode::All);
+    const bool defaultMiddle = (mode == TriggerMode::MiddleOnly || mode == TriggerMode::Both || mode == TriggerMode::All);
+    const bool defaultX1 = (mode == TriggerMode::Both || mode == TriggerMode::All || mode == TriggerMode::X1Only);
+    const bool defaultX2 = (mode == TriggerMode::Both || mode == TriggerMode::All || mode == TriggerMode::X2Only);
+    const bool defaultLeft = false;
+
+    if (isTriggerEnabled("right", defaultRight))        mask |= GestureTriggerMask::Right;
+    if (isTriggerEnabled("middle", defaultMiddle))      mask |= GestureTriggerMask::Middle;
+    if (isTriggerEnabled("xbutton1", defaultX1))        mask |= GestureTriggerMask::X1;
+    if (isTriggerEnabled("xbutton2", defaultX2))        mask |= GestureTriggerMask::X2;
+    if (isTriggerEnabled("left", defaultLeft))          mask |= GestureTriggerMask::Left;
+
+    if (isTriggerEnabled("edge_top_slide", true))       mask |= GestureTriggerMask::EdgeTopSlide;
+    if (isTriggerEnabled("edge_bottom_slide", false))   mask |= GestureTriggerMask::EdgeBottomSlide;
+    if (isTriggerEnabled("edge_left_slide", false))     mask |= GestureTriggerMask::EdgeLeftSlide;
+    if (isTriggerEnabled("edge_right_slide", false))    mask |= GestureTriggerMask::EdgeRightSlide;
+
+    if (isTriggerEnabled("edge_top_wheel", false))      mask |= GestureTriggerMask::EdgeTopWheel;
+    if (isTriggerEnabled("edge_bottom_wheel", false))   mask |= GestureTriggerMask::EdgeBottomWheel;
+
+    if (isTriggerEnabled("edge_top_right", false))      mask |= GestureTriggerMask::EdgeTopRight;
+    if (isTriggerEnabled("edge_top_middle", false))     mask |= GestureTriggerMask::EdgeTopMiddle;
+    if (isTriggerEnabled("edge_top_left", false))       mask |= GestureTriggerMask::EdgeTopLeft;
+
+    return mask;
+}
+
+void GestureEngine::syncTriggerMask() {
+    const uint32_t mask = computeTriggerMask();
+    MouseHook::instance().setActiveTriggerMask(mask);
+    LOG_INFO("手势触发掩码已同步: 0x{:08X}", mask);
 }
 
 }  // namespace easy::gesture

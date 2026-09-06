@@ -106,6 +106,56 @@ static ScreenEdgeZone detectScreenEdgeZone(POINT pt, int tolerance = 4) {
     return ScreenEdgeZone::None;
 }
 
+ScreenEdgeZone MouseHook::getActiveScreenEdgeZone(POINT pt, MouseEventType type) const {
+    const ScreenEdgeZone rawZone = detectScreenEdgeZone(pt);
+    if (rawZone == ScreenEdgeZone::None) {
+        return ScreenEdgeZone::None;
+    }
+
+    const uint32_t mask = m_activeTriggerMask.load(std::memory_order_relaxed);
+    const bool isWheel = (type == MouseEventType::WheelUp || type == MouseEventType::WheelDown);
+
+    switch (rawZone) {
+        case ScreenEdgeZone::Top: {
+            if (isWheel) {
+                return (mask & GestureTriggerMask::EdgeTopWheel) ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
+            }
+            if (type == MouseEventType::RightDown) {
+                return ((mask & GestureTriggerMask::EdgeTopSlide) || (mask & GestureTriggerMask::EdgeTopRight))
+                    ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
+            }
+            if (type == MouseEventType::MiddleDown) {
+                return ((mask & GestureTriggerMask::EdgeTopSlide) || (mask & GestureTriggerMask::EdgeTopMiddle))
+                    ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
+            }
+            if (type == MouseEventType::LeftDown) {
+                return ((mask & GestureTriggerMask::EdgeTopSlide) || (mask & GestureTriggerMask::EdgeTopLeft))
+                    ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
+            }
+            const uint32_t topMask = GestureTriggerMask::EdgeTopSlide | GestureTriggerMask::EdgeTopWheel |
+                                     GestureTriggerMask::EdgeTopRight | GestureTriggerMask::EdgeTopMiddle |
+                                     GestureTriggerMask::EdgeTopLeft;
+            return (mask & topMask) ? ScreenEdgeZone::Top : ScreenEdgeZone::None;
+        }
+        case ScreenEdgeZone::Bottom: {
+            if (isWheel) {
+                return (mask & GestureTriggerMask::EdgeBottomWheel) ? ScreenEdgeZone::Bottom : ScreenEdgeZone::None;
+            }
+            return (mask & GestureTriggerMask::EdgeBottomSlide) ? ScreenEdgeZone::Bottom : ScreenEdgeZone::None;
+        }
+        case ScreenEdgeZone::Left: {
+            if (isWheel) return ScreenEdgeZone::None;
+            return (mask & GestureTriggerMask::EdgeLeftSlide) ? ScreenEdgeZone::Left : ScreenEdgeZone::None;
+        }
+        case ScreenEdgeZone::Right: {
+            if (isWheel) return ScreenEdgeZone::None;
+            return (mask & GestureTriggerMask::EdgeRightSlide) ? ScreenEdgeZone::Right : ScreenEdgeZone::None;
+        }
+        default:
+            return ScreenEdgeZone::None;
+    }
+}
+
 bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRUCT& data) {
     if (nCode < 0) return false;
     if (data.flags & LLMHF_INJECTED) return false;
@@ -143,7 +193,7 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
             }
             case WM_RBUTTONDOWN: {
                 event.type = MouseEventType::RightDown;
-                event.edgeZone = detectScreenEdgeZone(data.pt);
+                event.edgeZone = getActiveScreenEdgeZone(data.pt, event.type);
                 event.isTopEdge = (event.edgeZone == ScreenEdgeZone::Top);
                 const auto mode = m_configuredTriggerMode.load(std::memory_order_relaxed);
                 uint8_t mods = 0;
@@ -193,10 +243,13 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
 
                 const bool nativeSearchMenu = shouldBypassGestureForNativeSearchMenu(
                     hitClass, (mods & MOUSE_MOD_SHIFT) != 0) || ((mods & MOUSE_MOD_SHIFT) != 0 && inSearchBounds);
+                const uint32_t mask = m_activeTriggerMask.load(std::memory_order_relaxed);
+                const bool rightAllowed = ((mask & GestureTriggerMask::Right) != 0) || (event.edgeZone != ScreenEdgeZone::None);
                 if (gestureEnabled &&
                     !nativeSearchMenu &&
                     !isTrayOrTaskbarTarget &&
                     !m_triggerButtonDown.load(std::memory_order_relaxed) &&
+                    rightAllowed &&
                     (mode == TriggerMode::RightOnly || mode == TriggerMode::Both || mode == TriggerMode::All)) {
                     m_activeTriggerDown.store(event.type, std::memory_order_relaxed);
                     m_triggerButtonDown.store(true, std::memory_order_relaxed);
@@ -225,11 +278,14 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                 break;
             case WM_MBUTTONDOWN: {
                 event.type = MouseEventType::MiddleDown;
-                event.edgeZone = detectScreenEdgeZone(data.pt);
+                event.edgeZone = getActiveScreenEdgeZone(data.pt, event.type);
                 event.isTopEdge = (event.edgeZone == ScreenEdgeZone::Top);
                 const auto mode = m_configuredTriggerMode.load(std::memory_order_relaxed);
+                const uint32_t mask = m_activeTriggerMask.load(std::memory_order_relaxed);
+                const bool middleAllowed = ((mask & GestureTriggerMask::Middle) != 0) || (event.edgeZone != ScreenEdgeZone::None);
                 if (gestureEnabled &&
                     !m_triggerButtonDown.load(std::memory_order_relaxed) &&
+                    middleAllowed &&
                     (mode == TriggerMode::MiddleOnly || mode == TriggerMode::Both || mode == TriggerMode::All)) {
                     m_activeTriggerDown.store(event.type, std::memory_order_relaxed);
                     m_triggerButtonDown.store(true, std::memory_order_relaxed);
@@ -255,14 +311,18 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
             case WM_XBUTTONDOWN: {
                 const WORD xbtn = HIWORD(data.mouseData);
                 event.type = (xbtn == XBUTTON2) ? MouseEventType::X2Down : MouseEventType::X1Down;
-                event.edgeZone = detectScreenEdgeZone(data.pt);
+                event.edgeZone = getActiveScreenEdgeZone(data.pt, event.type);
                 event.isTopEdge = (event.edgeZone == ScreenEdgeZone::Top);
                 const auto mode = m_configuredTriggerMode.load(std::memory_order_relaxed);
+                const uint32_t mask = m_activeTriggerMask.load(std::memory_order_relaxed);
                 const bool allowX = (mode == TriggerMode::Both || mode == TriggerMode::All ||
                                      (mode == TriggerMode::X1Only && xbtn == XBUTTON1) ||
                                      (mode == TriggerMode::X2Only && xbtn == XBUTTON2));
+                const bool xAllowed = ((xbtn == XBUTTON1 && (mask & GestureTriggerMask::X1)) ||
+                                       (xbtn == XBUTTON2 && (mask & GestureTriggerMask::X2))) ||
+                                      (event.edgeZone != ScreenEdgeZone::None);
                 if (gestureEnabled &&
-                    !m_triggerButtonDown.load(std::memory_order_relaxed) && allowX) {
+                    !m_triggerButtonDown.load(std::memory_order_relaxed) && allowX && xAllowed) {
                     m_activeTriggerDown.store(event.type, std::memory_order_relaxed);
                     m_triggerButtonDown.store(true, std::memory_order_relaxed);
                     m_cachedForegroundWindow = GetForegroundWindow();
@@ -290,15 +350,17 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
             }
             case WM_LBUTTONDOWN: {
                 event.type = MouseEventType::LeftDown;
-                event.edgeZone = detectScreenEdgeZone(data.pt);
+                event.edgeZone = getActiveScreenEdgeZone(data.pt, event.type);
                 event.isTopEdge = (event.edgeZone == ScreenEdgeZone::Top);
                 uint8_t mods = 0;
                 if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= MOUSE_MOD_CTRL;
                 if (GetAsyncKeyState(VK_MENU)    & 0x8000) mods |= MOUSE_MOD_ALT;
                 if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) mods |= MOUSE_MOD_SHIFT;
 
-                if (gestureEnabled && !m_triggerButtonDown.load(std::memory_order_relaxed) &&
-                    (event.edgeZone != ScreenEdgeZone::None || mods != 0)) {
+                const uint32_t mask = m_activeTriggerMask.load(std::memory_order_relaxed);
+                const bool canStartGesture = isLeftButtonGestureAllowed(event.edgeZone, mods, mask);
+
+                if (gestureEnabled && !m_triggerButtonDown.load(std::memory_order_relaxed) && canStartGesture) {
                     m_activeTriggerDown.store(event.type, std::memory_order_relaxed);
                     m_triggerButtonDown.store(true, std::memory_order_relaxed);
                     m_cachedForegroundWindow = GetForegroundWindow();
@@ -333,7 +395,7 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
             case WM_MOUSEWHEEL: {
                 short delta = HIWORD(data.mouseData);
                 event.type = delta > 0 ? MouseEventType::WheelUp : MouseEventType::WheelDown;
-                event.edgeZone = detectScreenEdgeZone(data.pt);
+                event.edgeZone = getActiveScreenEdgeZone(data.pt, event.type);
                 event.isTopEdge = (event.edgeZone == ScreenEdgeZone::Top);
                 shouldCapture = gestureEnabled &&
                     m_triggerButtonDown.load(std::memory_order_relaxed);

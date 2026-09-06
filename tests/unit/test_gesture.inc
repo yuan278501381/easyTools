@@ -366,6 +366,116 @@ TEST(GestureInputPolicyTest, OppositeMouseButtonCancelsTracking) {
     EXPECT_FALSE(cancelsGestureTracking(MouseEventType::RightUp, MouseEventType::RightDown));
 }
 
+TEST(GestureInputPolicyTest, LeftButtonTriggerHonorsEdgeAndMask) {
+    // 1. 当屏幕边缘触发关闭 (None) 且未配置左键手势时，严禁拦截左键
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, GestureTriggerMask::Right));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, GestureTriggerMask::Middle));
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, GestureTriggerMask::Right | GestureTriggerMask::Middle));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::RightOnly, GestureTriggerMask::Right, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::Both, GestureTriggerMask::Right | GestureTriggerMask::Middle, ScreenEdgeZone::None));
+
+    // 2. 当显式开启左键手势 (GestureTriggerMask::Left) 时，允许拦截左键
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, GestureTriggerMask::Left));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, GestureTriggerMask::Right | GestureTriggerMask::Left));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::RightOnly, GestureTriggerMask::Left, ScreenEdgeZone::None));
+
+    // 3. 当处于有效屏幕边缘区域时，允许边缘滑动类手势拦截
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Left, 0, GestureTriggerMask::EdgeLeftSlide));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Top, 0, GestureTriggerMask::EdgeTopSlide));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Bottom, 0, GestureTriggerMask::EdgeBottomSlide));
+    EXPECT_TRUE(isLeftButtonGestureAllowed(ScreenEdgeZone::Right, 0, GestureTriggerMask::EdgeRightSlide));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::RightOnly, GestureTriggerMask::EdgeLeftSlide, ScreenEdgeZone::Left));
+
+    // 4. 当处于非对应边缘区域时，严禁误拦截
+    EXPECT_FALSE(isLeftButtonGestureAllowed(ScreenEdgeZone::None, 0, GestureTriggerMask::EdgeLeftSlide));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::RightOnly, GestureTriggerMask::EdgeLeftSlide, ScreenEdgeZone::None));
+
+    // 5. 触发掩码未包含对应按键时，按下事件不触发手势
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::RightDown, TriggerMode::RightOnly, GestureTriggerMask::Middle, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::MiddleDown, TriggerMode::MiddleOnly, GestureTriggerMask::Right, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::X1Down, TriggerMode::X1Only, GestureTriggerMask::X2, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::X2Down, TriggerMode::X2Only, GestureTriggerMask::X1, ScreenEdgeZone::None));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::RightDown, TriggerMode::RightOnly, GestureTriggerMask::Right, ScreenEdgeZone::None));
+}
+
+TEST(GestureInputPolicyTest, FormatFullGestureCodeOrdering) {
+    // 1. 无修饰键、无边缘的常规手势
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, 0, MouseEventType::RightDown, "D-R"), "D-R");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, 0, MouseEventType::MiddleDown, "U"), "Middle+U");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, 0, MouseEventType::X1Down, "L"), "X1+L");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, 0, MouseEventType::X2Down, "R"), "X2+R");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, 0, MouseEventType::LeftDown, "D"), "Left+D");
+
+    // 2. 带修饰键前缀 (Ctrl -> Alt -> Shift)
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, MOUSE_MOD_CTRL, MouseEventType::RightDown, "U"), "Ctrl+U");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, MOUSE_MOD_CTRL | MOUSE_MOD_SHIFT, MouseEventType::RightDown, "L"), "Ctrl+Shift+L");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::None, MOUSE_MOD_CTRL | MOUSE_MOD_ALT | MOUSE_MOD_SHIFT, MouseEventType::RightDown, "R"), "Ctrl+Alt+Shift+R");
+
+    // 3. 带屏幕边缘前缀 (TopEdge, BottomEdge, LeftEdge, RightEdge)
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Top, 0, MouseEventType::RightDown, "D"), "TopEdge+D");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Bottom, 0, MouseEventType::RightDown, "U"), "BottomEdge+U");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Left, 0, MouseEventType::RightDown, "R"), "LeftEdge+R");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Right, 0, MouseEventType::RightDown, "L"), "RightEdge+L");
+
+    // 4. 复合前缀顺序: Edge + Modifiers + Trigger + BareCode (与前端 gestureModel.ts 100% 严格同源)
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Left, MOUSE_MOD_CTRL | MOUSE_MOD_SHIFT, MouseEventType::LeftDown, "D-R"), "LeftEdge+Ctrl+Shift+Left+D-R");
+    EXPECT_EQ(formatFullGestureCode(ScreenEdgeZone::Top, MOUSE_MOD_ALT, MouseEventType::MiddleDown, "U"), "TopEdge+Alt+Middle+U");
+}
+
+TEST(MouseHookEdgeTest, ActiveScreenEdgeZoneHonorsTriggerMask) {
+    auto& hook = MouseHook::instance();
+    const uint32_t savedMask = hook.activeTriggerMask();
+
+    // 1. 当只开启右键手势，关闭所有边缘与滚轮触发时
+    hook.setActiveTriggerMask(GestureTriggerMask::Right);
+
+    // 屏幕原点 (0, 0) 处：虽然物理位置在屏幕顶/左边缘，但掩码过滤后必须一律返回 ScreenEdgeZone::None
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::LeftDown), ScreenEdgeZone::None);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::RightDown), ScreenEdgeZone::None);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::WheelUp), ScreenEdgeZone::None);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::WheelDown), ScreenEdgeZone::None);
+
+    // 2. 仅开启屏幕顶部滑动 (EdgeTopSlide) 时：左键/右键按下返回 Top，但滚轮依然过滤返回 None
+    hook.setActiveTriggerMask(GestureTriggerMask::Right | GestureTriggerMask::EdgeTopSlide);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::LeftDown), ScreenEdgeZone::Top);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::RightDown), ScreenEdgeZone::Top);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::WheelUp), ScreenEdgeZone::None);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::WheelDown), ScreenEdgeZone::None);
+
+    // 3. 仅开启屏幕顶部滚轮 (EdgeTopWheel) 时：滚轮返回 Top，但左键/右键按下必须返回 None
+    hook.setActiveTriggerMask(GestureTriggerMask::Right | GestureTriggerMask::EdgeTopWheel);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::WheelUp), ScreenEdgeZone::Top);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::WheelDown), ScreenEdgeZone::Top);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::LeftDown), ScreenEdgeZone::None);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 0}, MouseEventType::RightDown), ScreenEdgeZone::None);
+
+    // 4. 仅开启屏幕左侧滑动 (EdgeLeftSlide) 时：在左边缘且非顶部位置检测
+    hook.setActiveTriggerMask(GestureTriggerMask::Right | GestureTriggerMask::EdgeLeftSlide);
+    // 取屏幕垂直居中偏左 (x=0, y=500)
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 500}, MouseEventType::LeftDown), ScreenEdgeZone::Left);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 500}, MouseEventType::RightDown), ScreenEdgeZone::Left);
+    EXPECT_EQ(hook.getActiveScreenEdgeZone({0, 500}, MouseEventType::WheelUp), ScreenEdgeZone::None);
+
+    // 恢复原掩码
+    hook.setActiveTriggerMask(savedMask);
+}
+
+TEST(MouseHookEdgeTest, TriggerMaskDisablesIndividualButtons) {
+    // 验证当特定按键在掩码中被禁用时，isGestureTriggerDown 严密拒绝开始手势
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::RightDown, TriggerMode::RightOnly, GestureTriggerMask::None, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::MiddleDown, TriggerMode::MiddleOnly, GestureTriggerMask::None, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::X1Down, TriggerMode::X1Only, GestureTriggerMask::None, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::X2Down, TriggerMode::X2Only, GestureTriggerMask::None, ScreenEdgeZone::None));
+    EXPECT_FALSE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::Both, GestureTriggerMask::None, ScreenEdgeZone::None));
+
+    // 验证对应按键单独开启时正确放行
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::RightDown, TriggerMode::RightOnly, GestureTriggerMask::Right, ScreenEdgeZone::None));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::MiddleDown, TriggerMode::MiddleOnly, GestureTriggerMask::Middle, ScreenEdgeZone::None));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::X1Down, TriggerMode::X1Only, GestureTriggerMask::X1, ScreenEdgeZone::None));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::X2Down, TriggerMode::X2Only, GestureTriggerMask::X2, ScreenEdgeZone::None));
+    EXPECT_TRUE(isGestureTriggerDown(MouseEventType::LeftDown, TriggerMode::Both, GestureTriggerMask::Left, ScreenEdgeZone::None));
+}
+
 TEST(GestureInputPolicyTest, EasyToolsUiAndOverlayClassNames) {
     EXPECT_TRUE(isEasyToolsUiClassName(L"EasyTools_SettingsWindow"));
     EXPECT_TRUE(isEasyToolsUiClassName(L"EasyTools_GestureOverlay"));
