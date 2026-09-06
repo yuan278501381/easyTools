@@ -15,6 +15,7 @@
 #include "core/stats/PerformanceMonitor.h"
 #include "core/update/UpdateChecker.h"
 #include "core/events/EventBus.h"
+#include "core/remote/RemoteMasterEngine.h"
 #include "EasyToolsVersion.h"
 #include <algorithm>
 #include <atomic>
@@ -1103,7 +1104,7 @@ const std::vector<MarketplaceItem>& getMarketplaceCatalog() {
 bool isCoreBuiltinPlugin(const std::string& id) {
     return id == "gesture" || id == "capture" || id == "search" ||
            id == "keycast" || id == "dialogenhancer" || id == "dialog_enhancer" ||
-           id == "spotlight";
+           id == "spotlight" || id == "remote_boost" || id == "remote";
 }
 
 bool isExtensionInstalled(const std::string& id) {
@@ -1181,6 +1182,26 @@ void MessageBridge::registerBuiltinHandlers() {
         });
         existingIds.insert("spotlight");
 
+        // 内置核心模块：远程协助增强 (remote_boost)
+        const auto remoteSettings = easy::core::RemoteMasterEngine::instance().getSettings();
+        plugins.push_back({
+            {"id", "remote_boost"},
+            {"name", "远程协助增强"},
+            {"version", easy::version::String},
+            {"fileName", "EasyTools.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"remote-tunnel", "hotkey-passthrough", "ime-sanitizer"}},
+            {"permissions", {"low-level-keyboard-hook", "window-event-hook", "input-synthesis"}},
+            {"executionModel", "trusted-native-in-process"},
+            {"enabled", remoteSettings.enabled},
+            {"active", remoteSettings.enabled},
+            {"restartRequired", false},
+            {"state", remoteSettings.enabled ? "running" : "disabled"},
+            {"error", ""},
+            {"isExtension", false}
+        });
+        existingIds.insert("remote_boost");
+
         // 合并已安装的扩展插件
         auto& config = ConfigManager::instance();
         auto installedList = config.get<std::vector<std::string>>("/plugins/installedExtensions", {});
@@ -1220,6 +1241,13 @@ void MessageBridge::registerBuiltinHandlers() {
         if (id == "spotlight") {
             ConfigManager::instance().set<bool>("/spotlight/enabled", enabled);
             EventBus::instance().publish(SpotlightStateChangedEvent{enabled});
+            return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "remote_boost" || id == "remote") {
+            auto s = easy::core::RemoteMasterEngine::instance().getSettings();
+            s.enabled = enabled;
+            easy::core::RemoteMasterEngine::instance().updateSettings(s);
             return {{"success", true}, {"restartRequired", false}};
         }
 

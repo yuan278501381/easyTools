@@ -11,7 +11,7 @@
 import { type FC, type MouseEvent, useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Minus, Square, Copy, X, Globe, Sun, Moon, Monitor, Check, ChevronDown, Palette } from 'lucide-react';
-import { EasyToolsBolt } from './EasyToolsBolt';
+import { LogoGlyph } from './EasyToolsBolt';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './TitleBar.css';
 
@@ -191,7 +191,7 @@ export const TitleBar: FC<TitleBarProps> = ({
       {/* ── 左侧品牌标识与标题 ────────────────────────────────────── */}
       <div className="titlebar__brand">
         <span className="titlebar__logo">
-          <EasyToolsBolt size={18} fill="var(--primary)" />
+          <LogoGlyph size={18} fill="var(--primary)" />
         </span>
         <span className="titlebar__title">{t('app.title', 'EasyTools')}</span>
         {isElevated && (

@@ -57,7 +57,7 @@ inline bool isBridgeMethodAllowed(std::string_view message, Surface surface) {
                 break;
             case Surface::Tray:
                 allowed = starts("tray.") || starts("general.") || starts("plugins.") ||
-                          starts("gesture.") || starts("app.");
+                          starts("gesture.") || starts("app.") || starts("remote.");
                 break;
             case Surface::QuickLook:
                 allowed = starts("quicklook.");

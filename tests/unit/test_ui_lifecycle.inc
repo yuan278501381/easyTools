@@ -35,6 +35,8 @@ TEST(WebViewSecurityTest, AllowsTrayRequiredMethods) {
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"app.restartElevated\"}", Surface::Tray));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"tray.action\"}", Surface::Tray));
     EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"tray.resize\"}", Surface::Tray));
+    EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"remote.getSettings\"}", Surface::Tray));
+    EXPECT_TRUE(isBridgeMethodAllowed("{\"method\":\"remote.updateSettings\"}", Surface::Tray));
     EXPECT_FALSE(isBridgeMethodAllowed("{\"method\":\"search.query\"}", Surface::Tray));
     EXPECT_FALSE(isBridgeMethodAllowed("{\"method\":\"capture.start\"}", Surface::Tray));
 }

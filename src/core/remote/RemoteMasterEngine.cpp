@@ -200,14 +200,19 @@ RemoteMasterSettings RemoteMasterEngine::getSettings() const {
 }
 
 void RemoteMasterEngine::updateSettings(const RemoteMasterSettings& settings) {
+    bool becameDisabled = false;
     {
         std::lock_guard lock(m_mutex);
+        becameDisabled = m_settings.enabled && !settings.enabled;
         m_settings = settings;
         updateParsedEmergencyShortcut();
         m_cachedForegroundHwnd = nullptr;
         m_cachedIsRemote = false;
         m_cachedProcessName.clear();
         saveSettings();
+    }
+    if (becameDisabled && m_imeSanitized.load(std::memory_order_relaxed)) {
+        onRemoteForegroundLost(m_activeRemoteHwnd.load(std::memory_order_relaxed));
     }
     LOG_INFO("[RemoteMaster] Settings updated");
 }
@@ -570,6 +575,8 @@ bool RemoteMasterEngine::checkWindowIsRemote(HWND hwnd, std::string* outProcessN
 }
 
 void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
+    if (!m_settings.enabled) return;
+
     // 复位输入热键与连按状态机，确保进入远控前台时干净无状态污染
     m_winKeyDown.store(false, std::memory_order_relaxed);
     m_lastRightCtrlUpTime.store(0, std::memory_order_relaxed);
@@ -914,6 +921,8 @@ void CALLBACK RemoteMasterEngine::winEventProc(
     if (event != EVENT_SYSTEM_FOREGROUND || !hwnd) return;
 
     auto& engine = RemoteMasterEngine::instance();
+    if (!engine.m_settings.enabled) return;
+
     std::string procName;
     bool isRemote = engine.checkWindowIsRemote(hwnd, &procName);
 

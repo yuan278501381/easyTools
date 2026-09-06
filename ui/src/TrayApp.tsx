@@ -11,7 +11,7 @@ export default function TrayApp() {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const [gesturePaused, setGesturePaused] = useState(false);
-  const [remoteBoostEnabled, setRemoteBoostEnabled] = useState(false);
+  const [remoteBoostEnabled, setRemoteBoostEnabled] = useState(true);
   const [elevated, setElevated] = useState(false);
   const [elevating, setElevating] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -21,7 +21,7 @@ export default function TrayApp() {
   const sizeFrameRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const [activePlugins, setActivePlugins] = useState<Set<string>>(() => new Set([
-    'capture', 'search', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer'
+    'capture', 'search', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost'
   ]));
 
   // ResizeObserver can fire again because the native host accepted the previous
@@ -31,7 +31,28 @@ export default function TrayApp() {
     sizeFrameRef.current = window.requestAnimationFrame(() => {
       sizeFrameRef.current = null;
       if (!menuRef.current) return;
-      const totalHeight = Math.ceil(menuRef.current.getBoundingClientRect().height);
+      const el = menuRef.current;
+      const rect = el.getBoundingClientRect();
+      const borderY = el.offsetHeight - el.clientHeight;
+      let totalHeight = Math.ceil(Math.max(rect.height, el.scrollHeight + borderY));
+
+      // 深度双保险：遍历直接子元素，通过最后一个子元素的物理布局位置交叉校验，杜绝任何容器死锁
+      const children = Array.from(el.children) as HTMLElement[];
+      if (children.length > 0) {
+        const lastChild = children[children.length - 1];
+        const lastChildRect = lastChild.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        const padBottom = parseFloat(style.paddingBottom) || 0;
+        const borderBottom = parseFloat(style.borderBottomWidth) || 0;
+        const lastMarginBottom = parseFloat(window.getComputedStyle(lastChild).marginBottom) || 0;
+        const fromChildren = Math.ceil(
+          (lastChildRect.bottom - rect.top) + el.scrollTop + padBottom + borderBottom + lastMarginBottom
+        );
+        if (fromChildren > 20) {
+          totalHeight = fromChildren;
+        }
+      }
+
       const fixedWidth = 220;
       const previous = lastReportedSizeRef.current;
       if (totalHeight <= 20 || (previous.width === fixedWidth && previous.height === totalHeight)) return;
@@ -56,7 +77,7 @@ export default function TrayApp() {
         sizeFrameRef.current = null;
       }
     };
-  }, [reportSize]);
+  }, [reportSize, activePlugins, remoteBoostEnabled, pendingRestart, elevated]);
 
   const refreshState = useCallback(() => {
     if (refreshInFlightRef.current) return;
@@ -239,10 +260,22 @@ export default function TrayApp() {
     if (item.id === 'remote_boost') {
       const next = !remoteBoostEnabled;
       setRemoteBoostEnabled(next);
+      setActivePlugins((prev) => {
+        const set = new Set(prev);
+        if (next) set.add('remote_boost');
+        else set.delete('remote_boost');
+        return set;
+      });
       try {
         await bridgeRequest('remote.updateSettings', { enabled: next });
       } catch {
         setRemoteBoostEnabled(!next);
+        setActivePlugins((prev) => {
+          const set = new Set(prev);
+          if (!next) set.add('remote_boost');
+          else set.delete('remote_boost');
+          return set;
+        });
       }
       return;
     }

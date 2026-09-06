@@ -301,6 +301,29 @@ TEST(MessageBridgeTest, IPCChannelDispatch) {
     auto plugins = nlohmann::json::parse(
         bridge.handleMessage(R"({"id":79,"method":"plugins.getAll"})"));
     EXPECT_TRUE(plugins["result"].is_array());
+    bool foundRemoteBoost = false;
+    for (const auto& item : plugins["result"]) {
+        if (item.value("id", "") == "remote_boost") {
+            foundRemoteBoost = true;
+            EXPECT_EQ(item.value("name", ""), "远程协助增强");
+            EXPECT_EQ(item.value("executionModel", ""), "trusted-native-in-process");
+            auto caps = item.value("capabilities", std::vector<std::string>{});
+            EXPECT_TRUE(std::find(caps.begin(), caps.end(), "remote-tunnel") != caps.end());
+            EXPECT_TRUE(std::find(caps.begin(), caps.end(), "hotkey-passthrough") != caps.end());
+            EXPECT_TRUE(std::find(caps.begin(), caps.end(), "ime-sanitizer") != caps.end());
+            auto perms = item.value("permissions", std::vector<std::string>{});
+            EXPECT_TRUE(std::find(perms.begin(), perms.end(), "low-level-keyboard-hook") != perms.end());
+            EXPECT_TRUE(std::find(perms.begin(), perms.end(), "window-event-hook") != perms.end());
+            EXPECT_TRUE(std::find(perms.begin(), perms.end(), "input-synthesis") != perms.end());
+            break;
+        }
+    }
+    EXPECT_TRUE(foundRemoteBoost);
+
+    auto toggleRemote = nlohmann::json::parse(bridge.handleMessage(
+        R"({"id":801,"method":"plugins.setEnabled","params":{"id":"remote_boost","enabled":true}})"));
+    EXPECT_TRUE(toggleRemote["result"]["success"].get<bool>());
+    EXPECT_FALSE(toggleRemote["result"]["restartRequired"].get<bool>());
     auto invalidPluginToggle = nlohmann::json::parse(bridge.handleMessage(
         R"({"id":80,"method":"plugins.setEnabled","params":{"id":"missing","enabled":true}})"));
     EXPECT_FALSE(invalidPluginToggle["result"]["success"].get<bool>());
@@ -677,9 +700,9 @@ TEST(DpiUtilsTest, HighDpiSharedMetrics) {
     const SIZE tray100 = easy::ui::TrayWindowStyle::windowSizeForDpi(96);
     const SIZE tray150 = easy::ui::TrayWindowStyle::windowSizeForDpi(144);
     const SIZE tray200 = easy::ui::TrayWindowStyle::windowSizeForDpi(192);
-    EXPECT_TRUE(tray100.cx == 220 && tray100.cy == 330);
-    EXPECT_TRUE(tray150.cx == 330 && tray150.cy == 495);
-    EXPECT_TRUE(tray200.cx == 440 && tray200.cy == 660);
+    EXPECT_TRUE(tray100.cx == 220 && tray100.cy == 410);
+    EXPECT_TRUE(tray150.cx == 330 && tray150.cy == 615);
+    EXPECT_TRUE(tray200.cx == 440 && tray200.cy == 820);
 
     const SIZE settings100 = easy::ui::SettingsWindowStyle::windowSizeForDpi(96);
     const SIZE settings150 = easy::ui::SettingsWindowStyle::windowSizeForDpi(144);

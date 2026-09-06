@@ -312,6 +312,14 @@
       "spotlight": {
         "name": "Mouse Presentation & FX",
         "description": "Spotlight cursor focus, click ripple effects, and motion trails for demos and screencasts."
+      },
+      "remote_boost": {
+        "name": "Remote Boost",
+        "description": "Immersive system hotkey tunneling, modifier key emergency flush, and smart remote IME sanitization for remote desktop hosts."
+      },
+      "remote": {
+        "name": "Remote Boost",
+        "description": "Immersive system hotkey tunneling, modifier key emergency flush, and smart remote IME sanitization for remote desktop hosts."
       }
     },
     "title": "Plugins & Extensions"

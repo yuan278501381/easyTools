@@ -188,7 +188,7 @@ function App() {
     };
   }, []);
 
-  const standardPluginIds = new Set(['gesture', 'capture', 'search', 'keycast', 'dialogenhancer', 'dialog_enhancer']);
+  const standardPluginIds = new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost', 'remote']);
   const installedExtensionIds = plugins
     .filter((p) => !standardPluginIds.has(p.id))
     .map((p) => p.id);

@@ -27,12 +27,17 @@ namespace {
 
 SIZE getTrayWindowSize(POINT anchor, int customW = 0, int customH = 0) {
     const HMONITOR monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    const RECT workArea = easy::core::dpi::workArea(monitor);
     const float scale = easy::core::dpi::scaleForMonitor(monitor);
+    const LONG margin = easy::core::dpi::scaleMetric(TrayWindowStyle::BaseScreenMargin, scale);
+    const int maxPhysicalH = std::max<int>(200, static_cast<int>(workArea.bottom - workArea.top - 2 * margin));
     const int effectiveW = customW > 0 ? std::clamp(customW, 180, 260) : TrayWindowStyle::BaseWidth;
-    const int effectiveH = customH > 0 ? std::clamp(customH, 100, 550) : TrayWindowStyle::BaseHeight;
+    const int effectiveH = customH > 0 ? std::clamp(customH, 100, 600) : TrayWindowStyle::BaseHeight;
+    const int physicalW = static_cast<int>(effectiveW * scale);
+    const int physicalH = std::min<int>(static_cast<int>(effectiveH * scale), maxPhysicalH);
     return {
-        static_cast<LONG>(effectiveW * scale),
-        static_cast<LONG>(effectiveH * scale)
+        static_cast<LONG>(physicalW),
+        static_cast<LONG>(physicalH)
     };
 }
 
@@ -198,20 +203,26 @@ void TrayWindow::updatePlacement() {
     const float scale = easy::core::dpi::scaleForMonitor(monitor);
     const int radius = static_cast<int>(10 * scale);
     easy::core::WinUtils::applyUniversalRoundedCorners(m_hwnd, size.cx, size.cy, radius);
+    if (m_controller) {
+        syncWebViewDpi(m_controller.Get(), m_hwnd);
+    }
     m_updatingPlacement = false;
 }
 
 void TrayWindow::setContentSize(int width, int height) {
     if (!m_hwnd || !IsWindow(m_hwnd) || width <= 0 || height <= 0) return;
-    const int clampedW = std::clamp(width, 180, 220);
-    const int clampedH = std::clamp(height, 100, 500);
+    const int clampedW = std::clamp(width, 180, 260);
+    const int clampedH = std::clamp(height, 100, 600);
     if (m_contentWidth == clampedW && m_contentHeight == clampedH) return;
     m_contentWidth = clampedW;
     m_contentHeight = clampedH;
     const HMONITOR monitor = MonitorFromPoint(m_anchor, MONITOR_DEFAULTTONEAREST);
+    const RECT workArea = easy::core::dpi::workArea(monitor);
     const float scale = easy::core::dpi::scaleForMonitor(monitor);
+    const LONG margin = easy::core::dpi::scaleMetric(TrayWindowStyle::BaseScreenMargin, scale);
+    const int maxPhysicalH = std::max<int>(200, static_cast<int>(workArea.bottom - workArea.top - 2 * margin));
     const int scaledW = static_cast<int>(clampedW * scale);
-    const int scaledH = static_cast<int>(clampedH * scale);
+    const int scaledH = std::min<int>(static_cast<int>(clampedH * scale), maxPhysicalH);
 
     m_updatingPlacement = true;
     const POINT origin = trayWindowOrigin(m_anchor.x, m_anchor.y, scaledW, scaledH);

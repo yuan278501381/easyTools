@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FC } from 'react';
 import {
   Bot,
   Camera,
+  Cast,
   ClipboardList,
   DownloadCloud,
   FileCode2,
@@ -83,13 +84,15 @@ const ICONS = {
   spotlight: Sparkles,
   dialogenhancer: FolderSymlink,
   dialog_enhancer: FolderSymlink,
+  remote_boost: Cast,
+  remote: Cast,
   ai_assistant: Bot,
   color_picker: Pipette,
   clipboard_manager: ClipboardList,
   markdown_preview: FileCode2,
 } as const;
 
-const CORE_PLUGIN_IDS = new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer']);
+const CORE_PLUGIN_IDS = new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost', 'remote']);
 
 const PLUGIN_DISPLAY_ORDER: Record<string, number> = {
   search: 1,
@@ -99,6 +102,8 @@ const PLUGIN_DISPLAY_ORDER: Record<string, number> = {
   dialog_enhancer: 4,
   keycast: 5,
   spotlight: 6,
+  remote_boost: 7,
+  remote: 7,
 };
 
 export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [] }) => {
