@@ -181,8 +181,8 @@ bool TrayWindow::createWindow(HINSTANCE hInstance, int x, int y) {
 
     if (!m_hwnd) return false;
 
-    // 启用 DWM 全客户区扩展与跨平台通用圆角裁剪，全兼容 Win11、Win10、Server 2022/2025
-    MARGINS margins = {1, 1, 1, 1};
+    // 启用 DWM 全客户区扩展 (Sheet of Glass) 与跨平台通用圆角裁剪，彻底消除透明区域黑底
+    MARGINS margins = {-1, -1, -1, -1};
     DwmExtendFrameIntoClientArea(m_hwnd, &margins);
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
@@ -405,6 +405,8 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
     }
     auto& inst = TrayWindow::instance();
     switch (uMsg) {
+        case WM_ERASEBKGND:
+            return 1;
         case WM_NCCALCSIZE: {
             if (wParam) {
                 return 0; // 消除系统默认边框占用，使 WebView2 客户区占满整个圆角窗口

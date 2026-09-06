@@ -26,7 +26,7 @@ html[data-surface="tray"] body {
   overflow: hidden !important;
   background: transparent !important;
   font-family: var(--font-sans);
-  height: auto;
+  height: 100% !important;
   width: 220px;
   max-width: 220px;
 }
@@ -34,7 +34,7 @@ html[data-surface="tray"] body {
 html[data-surface="tray"] #root {
   padding: 0;
   margin: 0;
-  height: auto;
+  height: 100% !important;
   width: 220px;
   max-width: 220px;
   box-sizing: border-box;
@@ -55,7 +55,7 @@ html[data-surface="tray"] #root {
   padding: 6px;
   width: 100%;
   max-width: 220px;
-  height: auto;
+  height: 100% !important;
   max-height: 100vh;
   box-sizing: border-box;
   overflow-y: auto;

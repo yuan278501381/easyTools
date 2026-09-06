@@ -24,44 +24,50 @@ export default function TrayApp() {
     'capture', 'search', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost'
   ]));
 
+  // 立即同步直接测量并上报尺寸 (force=true 时绕过重复判定)
+  const reportSizeDirect = useCallback((force = false) => {
+    if (!menuRef.current) return;
+    const el = menuRef.current;
+    const rect = el.getBoundingClientRect();
+    const borderY = el.offsetHeight - el.clientHeight;
+    let totalHeight = Math.ceil(Math.max(rect.height, el.scrollHeight + borderY));
+
+    // 深度双保险：遍历直接子元素，通过最后一个子元素的物理布局位置交叉校验，杜绝任何容器死锁
+    const children = Array.from(el.children) as HTMLElement[];
+    if (children.length > 0) {
+      const lastChild = children[children.length - 1];
+      const lastChildRect = lastChild.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      const padBottom = parseFloat(style.paddingBottom) || 0;
+      const borderBottom = parseFloat(style.borderBottomWidth) || 0;
+      const lastMarginBottom = parseFloat(window.getComputedStyle(lastChild).marginBottom) || 0;
+      const fromChildren = Math.ceil(
+        (lastChildRect.bottom - rect.top) + el.scrollTop + padBottom + borderBottom + lastMarginBottom
+      );
+      if (fromChildren > 20) {
+        totalHeight = fromChildren;
+      }
+    }
+
+    const fixedWidth = 220;
+    const previous = lastReportedSizeRef.current;
+    if (totalHeight <= 20) return;
+    if (!force && previous.width === fixedWidth && previous.height === totalHeight) return;
+    lastReportedSizeRef.current = { width: fixedWidth, height: totalHeight };
+    void bridgeRequest('tray.resize', { width: fixedWidth, height: totalHeight }).catch(() => {
+      lastReportedSizeRef.current = { width: 0, height: 0 };
+    });
+  }, []);
+
   // ResizeObserver can fire again because the native host accepted the previous
   // resize. Coalesce to one measurement per frame and never echo the same size.
   const reportSize = useCallback(() => {
     if (sizeFrameRef.current !== null) return;
     sizeFrameRef.current = window.requestAnimationFrame(() => {
       sizeFrameRef.current = null;
-      if (!menuRef.current) return;
-      const el = menuRef.current;
-      const rect = el.getBoundingClientRect();
-      const borderY = el.offsetHeight - el.clientHeight;
-      let totalHeight = Math.ceil(Math.max(rect.height, el.scrollHeight + borderY));
-
-      // 深度双保险：遍历直接子元素，通过最后一个子元素的物理布局位置交叉校验，杜绝任何容器死锁
-      const children = Array.from(el.children) as HTMLElement[];
-      if (children.length > 0) {
-        const lastChild = children[children.length - 1];
-        const lastChildRect = lastChild.getBoundingClientRect();
-        const style = window.getComputedStyle(el);
-        const padBottom = parseFloat(style.paddingBottom) || 0;
-        const borderBottom = parseFloat(style.borderBottomWidth) || 0;
-        const lastMarginBottom = parseFloat(window.getComputedStyle(lastChild).marginBottom) || 0;
-        const fromChildren = Math.ceil(
-          (lastChildRect.bottom - rect.top) + el.scrollTop + padBottom + borderBottom + lastMarginBottom
-        );
-        if (fromChildren > 20) {
-          totalHeight = fromChildren;
-        }
-      }
-
-      const fixedWidth = 220;
-      const previous = lastReportedSizeRef.current;
-      if (totalHeight <= 20 || (previous.width === fixedWidth && previous.height === totalHeight)) return;
-      lastReportedSizeRef.current = { width: fixedWidth, height: totalHeight };
-      void bridgeRequest('tray.resize', { width: fixedWidth, height: totalHeight }).catch(() => {
-        lastReportedSizeRef.current = { width: 0, height: 0 };
-      });
+      reportSizeDirect(false);
     });
-  }, []);
+  }, [reportSizeDirect]);
 
   useLayoutEffect(() => {
     reportSize();
@@ -120,7 +126,7 @@ export default function TrayApp() {
     refreshState();
     const handleShow = () => {
       refreshState();
-      reportSize();
+      reportSizeDirect(true);
     };
     const handleVisibility = () => {
       if (document.hidden && pendingRestartRef.current) {
@@ -137,7 +143,7 @@ export default function TrayApp() {
       window.removeEventListener('visibilitychange', handleVisibility);
       delete document.documentElement.dataset.surface;
     };
-  }, [refreshState, reportSize]);
+  }, [refreshState, reportSizeDirect]);
 
   // 键盘快捷导航 (Esc 关闭，方向键切换焦点)
   useEffect(() => {

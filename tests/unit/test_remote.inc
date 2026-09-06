@@ -468,11 +468,17 @@ TEST(RemoteMasterTest, ImeSanitizerLifecycle) {
     engine.setMockForeground(dummyHwnd, false, "notepad.exe");
     EXPECT_FALSE(engine.isImeSanitized());
 
-    // 当关闭脱敏配置时：进入远控不应激活脱敏
-    auto s = engine.getSettings();
-    s.imeSanitizerEnabled = false;
-    engine.updateSettings(s);
+    // 处于脱敏态时动态关闭脱敏配置：应立即退出脱敏状态
+    engine.resetDefaults();
+    engine.setMockForeground(dummyHwnd, true, "RustDesk.exe");
+    EXPECT_TRUE(engine.isImeSanitized());
+    auto s2 = engine.getSettings();
+    s2.imeSanitizerEnabled = false;
+    engine.updateSettings(s2);
+    EXPECT_FALSE(engine.isImeSanitized());
 
+    // 当关闭脱敏配置时：再次进入远控不应激活脱敏
+    engine.setMockForeground(dummyHwnd, false, "notepad.exe");
     engine.setMockForeground(dummyHwnd, true, "RustDesk.exe");
     EXPECT_FALSE(engine.isImeSanitized());
 

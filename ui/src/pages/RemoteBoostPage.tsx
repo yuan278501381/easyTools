@@ -106,14 +106,6 @@ export const RemoteBoostPage: FC = () => {
 
   useEffect(() => {
     loadData();
-    const timer = setInterval(() => {
-      bridgeRequest<RemoteState>('remote.getState')
-        .then((res) => {
-          if (res) setRemoteState(res);
-        })
-        .catch(() => {});
-    }, 1500);
-    return () => clearInterval(timer);
   }, [loadData]);
 
   // 更新设置
@@ -136,6 +128,11 @@ export const RemoteBoostPage: FC = () => {
     try {
       await bridgeRequest('remote.emergencyFlush');
       toast.success(t('remoteBoost.flushSuccess', 'All modifier keys and mouse buttons released'));
+      bridgeRequest<RemoteState>('remote.getState')
+        .then((res) => {
+          if (res) setRemoteState(res);
+        })
+        .catch(() => {});
     } catch {
       toast.error(t('remoteBoost.flushFailed', 'Emergency flush failed'));
     } finally {

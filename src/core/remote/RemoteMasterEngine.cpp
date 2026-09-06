@@ -203,13 +203,19 @@ void RemoteMasterEngine::updateSettings(const RemoteMasterSettings& settings) {
     bool becameDisabled = false;
     {
         std::lock_guard lock(m_mutex);
-        becameDisabled = m_settings.enabled && !settings.enabled;
+        becameDisabled = (m_settings.enabled && !settings.enabled) ||
+                         (m_settings.imeSanitizerEnabled && !settings.imeSanitizerEnabled);
         m_settings = settings;
         updateParsedEmergencyShortcut();
         m_cachedForegroundHwnd = nullptr;
         m_cachedIsRemote = false;
         m_cachedProcessName.clear();
         saveSettings();
+    }
+    if (!settings.enabled) {
+        m_isRemoteForeground.store(false, std::memory_order_relaxed);
+        m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
+        m_winKeyDown.store(false, std::memory_order_relaxed);
     }
     if (becameDisabled && m_imeSanitized.load(std::memory_order_relaxed)) {
         onRemoteForegroundLost(m_activeRemoteHwnd.load(std::memory_order_relaxed));
@@ -288,6 +294,8 @@ void RemoteMasterEngine::setMockForeground(HWND hwnd, bool isRemote, const std::
     m_mockHwnd = hwnd;
     m_mockIsRemote = isRemote;
     m_mockProcessName = processName;
+    m_isRemoteForeground.store(isRemote, std::memory_order_relaxed);
+    m_activeRemoteHwnd.store(isRemote ? hwnd : nullptr, std::memory_order_relaxed);
     if (isRemote) {
         onRemoteForegroundGained(hwnd);
     } else {
@@ -303,6 +311,8 @@ void RemoteMasterEngine::clearMockForeground() {
     m_mockHwnd = nullptr;
     m_mockIsRemote = false;
     m_mockProcessName.clear();
+    m_isRemoteForeground.store(false, std::memory_order_relaxed);
+    m_activeRemoteHwnd.store(nullptr, std::memory_order_relaxed);
 }
 
 bool RemoteMasterEngine::isRemoteProcessOrClass(
@@ -595,20 +605,14 @@ void RemoteMasterEngine::onRemoteForegroundGained(HWND hwnd) {
         m_savedHkl = currentHkl;
     }
 
-    // 切换至纯美式英文 (00000409)
-    HKL hklEng = LoadKeyboardLayoutW(L"00000409", KLF_ACTIVATE);
-    if (hklEng) {
-        ActivateKeyboardLayout(hklEng, KLF_SETFORPROCESS);
+    // 切换至纯美式英文 (00000409)，仅非阻塞投递给目标远控窗口，绝不污染 EasyTools 本地进程自身
+    // 严禁传入 KLF_ACTIVATE，否则 Windows 将在本地 UI 线程激活该布局并广播 WM_INPUTLANGCHANGE 导致 UIPI 互锁假死
+    HKL hklEng = LoadKeyboardLayoutW(L"00000409", 0);
+    if (!hklEng) {
+        hklEng = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
     }
-    if (hwnd && IsWindow(hwnd)) {
+    if (hwnd && IsWindow(hwnd) && hklEng) {
         PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklEng));
-
-        // 跨进程通知输入法窗口与宿主窗口强制关闭候选状态 (IMC_SETOPENSTATUS = 0)
-        HWND imeWnd = ImmGetDefaultIMEWnd(hwnd);
-        if (imeWnd) {
-            SendMessageTimeoutW(imeWnd, WM_IME_CONTROL, 0x0006 /* IMC_SETOPENSTATUS */, 0, SMTO_ABORTIFHUNG, 50, nullptr);
-        }
-        SendMessageTimeoutW(hwnd, WM_IME_CONTROL, 0x0006 /* IMC_SETOPENSTATUS */, 0, SMTO_ABORTIFHUNG, 50, nullptr);
     }
     m_imeSanitized.store(true, std::memory_order_relaxed);
     LOG_INFO("[RemoteMaster] IME Sanitizer: Switched input layout to pure US English (0409)");
@@ -635,15 +639,8 @@ void RemoteMasterEngine::onRemoteForegroundLost(HWND hwnd) {
         m_savedHkl = nullptr;
     }
 
-    if (hklToRestore) {
-        ActivateKeyboardLayout(hklToRestore, KLF_SETFORPROCESS);
-        if (hwnd && IsWindow(hwnd)) {
-            PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
-        }
-        HWND curFg = GetForegroundWindow();
-        if (curFg && curFg != hwnd && IsWindow(curFg)) {
-            PostMessageW(curFg, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
-        }
+    if (hklToRestore && hwnd && IsWindow(hwnd)) {
+        PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(hklToRestore));
     }
     m_imeSanitized.store(false, std::memory_order_relaxed);
     LOG_INFO("[RemoteMaster] IME Sanitizer: Restored previous input layout");
@@ -825,14 +822,17 @@ bool RemoteMasterEngine::onLowLevelKeyboardEvent(const KBDLLHOOKSTRUCT& data, WP
     // ── 引擎 1: 沉浸式系统热键直通 (Immersive Remote Hotkey Tunnel) ────────
     if (!m_settings.hotkeyTunnelEnabled) return false;
 
-    HWND fg = m_mockActive ? m_mockHwnd : GetForegroundWindow();
-    if (!fg) return false;
-
-    bool isRemote = m_mockActive ? m_mockIsRemote : checkWindowIsRemote(fg);
+    bool isRemote = m_mockActive ? m_mockIsRemote : m_isRemoteForeground.load(std::memory_order_relaxed);
     if (!isRemote) {
         m_winKeyDown.store(false, std::memory_order_relaxed);
         return false;
     }
+
+    HWND fg = m_mockActive ? m_mockHwnd : m_activeRemoteHwnd.load(std::memory_order_relaxed);
+    if (!fg) {
+        fg = GetForegroundWindow();
+    }
+    if (!fg) return false;
 
     // 1. Win 键单独按下与弹起 (VK_LWIN / VK_RWIN)
     if (vk == VK_LWIN || vk == VK_RWIN) {
