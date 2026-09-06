@@ -126,9 +126,14 @@ extern "C" {
 namespace easy::ui {
 TrayWindow& TrayWindow::instance() {
     static TrayWindow inst;
+    static bool initialized = false;
+    if (!initialized) {
+        inst.m_webViewReady.store(true);
+        initialized = true;
+    }
     return inst;
 }
-void TrayWindow::preload(HINSTANCE) {}
+void TrayWindow::preload(HINSTANCE) { m_webViewReady.store(true); }
 void TrayWindow::show(HINSTANCE, int, int) { m_visible.store(true); }
 void TrayWindow::setContentSize(int, int) {}
 void TrayWindow::hide() { m_visible.store(false); }

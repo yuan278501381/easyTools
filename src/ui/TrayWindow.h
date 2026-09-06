@@ -36,6 +36,29 @@ public:
     /// 销毁
     void destroy();
 
+    /// 查询 WebView2 渲染环境是否已就绪
+    bool isWebViewReady() const { return m_webViewReady.load(); }
+
+    /// 设置 WebView2 就绪状态（供生命周期及测试桩注入使用）
+    void setWebViewReady(bool ready) { m_webViewReady.store(ready); }
+
+    /// 判断指定窗口是否属于任务栏或托盘溢出窗口白名单 (Shell_TrayWnd, Shell_SecondaryTrayWnd, NotifyIconOverflowWindow, TopLevelWindowForOverflowXamlIsland)
+    static inline bool isTaskbarOrOverflowWindow(HWND hwnd) {
+        if (!hwnd || !IsWindow(hwnd)) return false;
+        auto matchClass = [](HWND h) {
+            wchar_t cls[128] = {};
+            if (GetClassNameW(h, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) == 0) return false;
+            return _wcsicmp(cls, L"Shell_TrayWnd") == 0 ||
+                   _wcsicmp(cls, L"Shell_SecondaryTrayWnd") == 0 ||
+                   _wcsicmp(cls, L"NotifyIconOverflowWindow") == 0 ||
+                   _wcsicmp(cls, L"TopLevelWindowForOverflowXamlIsland") == 0;
+        };
+        if (matchClass(hwnd)) return true;
+        HWND root = GetAncestor(hwnd, GA_ROOT);
+        if (root && root != hwnd && matchClass(root)) return true;
+        return false;
+    }
+
 private:
     TrayWindow() = default;
     ~TrayWindow() { destroy(); }

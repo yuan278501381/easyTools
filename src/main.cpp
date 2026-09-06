@@ -349,6 +349,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
         ChangeWindowMessageFilter(g_wmTaskbarCreated, MSGFLT_ADD);
     }
     ChangeWindowMessageFilter(easy::tray::TrayIcon::WM_TRAYICON, MSGFLT_ADD);
+    ChangeWindowMessageFilter(WM_EASYTOOLS_SHOW_SETTINGS, MSGFLT_ADD);
+    const UINT msgShowSettingsEarly = RegisterWindowMessageW(L"EasyTools_ShowSettings_Broadcast");
+    if (msgShowSettingsEarly != 0) {
+        ChangeWindowMessageFilter(msgShowSettingsEarly, MSGFLT_ADD);
+    }
     const auto startupBeganAt = std::chrono::steady_clock::now();
 
     // ── 0b. 高分屏 (DPI) 感知 ─────────────────────────────────────────────
@@ -643,12 +648,11 @@ bool checkSingleInstance() {
             if (targetPid > 0) {
                 AllowSetForegroundWindow(targetPid);
             }
-            ShowWindow(settingsWnd, SW_SHOW);
+            ShowWindow(settingsWnd, IsIconic(settingsWnd) ? SW_RESTORE : SW_SHOW);
             SetForegroundWindow(settingsWnd);
-        } else {
-            UINT msgShow = RegisterWindowMessageW(L"EasyTools_ShowSettings_Broadcast");
-            PostMessageW(HWND_BROADCAST, msgShow, 0, 0);
         }
+        UINT msgShow = RegisterWindowMessageW(L"EasyTools_ShowSettings_Broadcast");
+        PostMessageW(HWND_BROADCAST, msgShow, 0, 0);
     }
     return false;
 }
@@ -717,6 +721,11 @@ HWND createMessageWindow(HINSTANCE hInstance) {
             ChangeWindowMessageFilterEx(hwnd, g_wmTaskbarCreated, MSGFLT_ALLOW, nullptr);
         }
         ChangeWindowMessageFilterEx(hwnd, WM_COMMAND, MSGFLT_ALLOW, nullptr);
+        ChangeWindowMessageFilterEx(hwnd, WM_EASYTOOLS_SHOW_SETTINGS, MSGFLT_ALLOW, nullptr);
+        const UINT msgShowBroadcast = RegisterWindowMessageW(L"EasyTools_ShowSettings_Broadcast");
+        if (msgShowBroadcast != 0) {
+            ChangeWindowMessageFilterEx(hwnd, msgShowBroadcast, MSGFLT_ALLOW, nullptr);
+        }
     }
 
     return hwnd;
@@ -1440,6 +1449,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
     }
     if (msg == WM_COMMAND) {
+        EndMenu();
         easy::tray::TrayIcon::instance().fireCallback(static_cast<easy::tray::TrayMenuId>(LOWORD(wParam)));
         return 0;
     }
@@ -1505,6 +1515,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     if (msg == WM_CLOSE || msg == WM_DESTROY) {
+        EndMenu();
         WTSUnRegisterSessionNotification(hwnd);
         PostQuitMessage(0);
         return 0;

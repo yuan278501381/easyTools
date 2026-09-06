@@ -2649,6 +2649,18 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 预编译作用域进程名正则失败: {}",
             "[{}] Failed to precompile scope process name regex: {}"
         }},
+        {"呼出 Windows 原生托盘快捷菜单 (自愈降级/Shift直通管线)", {
+            "[{}] 呼出 Windows 原生托盘快捷菜单 (自愈降级/Shift直通管线)",
+            "[{}] Showing Windows native tray context menu (fallback / Shift pass-through pipeline)"
+        }},
+        {"TrayWindow: CreateCoreWebView2Controller 失败, res=0x{:08X}", {
+            "[{}] TrayWindow: CreateCoreWebView2Controller 失败, res=0x{:08X}",
+            "[{}] TrayWindow: CreateCoreWebView2Controller failed, res=0x{:08X}"
+        }},
+        {"TrayWindow: WebView2 渲染环境已就绪", {
+            "[{}] TrayWindow: WebView2 渲染环境已就绪",
+            "[{}] TrayWindow: WebView2 render environment ready"
+        }},
     };
     return catalog;
 }

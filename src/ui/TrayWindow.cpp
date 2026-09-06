@@ -93,6 +93,8 @@ void TrayWindow::show(HINSTANCE hInstance, int x, int y) {
         SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         ShowWindow(m_hwnd, SW_SHOW);
         SetForegroundWindow(m_hwnd);
+        SetActiveWindow(m_hwnd);
+        SetFocus(m_hwnd);
         SetTimer(m_hwnd, IDT_TRAY_AUTOHIDE, 80, nullptr);
         m_visible = true;
 
@@ -116,6 +118,8 @@ void TrayWindow::show(HINSTANCE hInstance, int x, int y) {
     SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     ShowWindow(m_hwnd, SW_SHOW);
     SetForegroundWindow(m_hwnd);
+    SetActiveWindow(m_hwnd);
+    SetFocus(m_hwnd);
     SetTimer(m_hwnd, IDT_TRAY_AUTOHIDE, 80, nullptr);
     UpdateWindow(m_hwnd);
     m_visible = true;
@@ -252,9 +256,12 @@ void TrayWindow::initializeWebView2() {
                     m_hwnd,
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [this, generation](HRESULT res, ICoreWebView2Controller* controller) -> HRESULT {
-                            if (FAILED(res) || !controller) return E_FAIL;
+                            if (FAILED(res) || !controller) {
+                                LOG_WARN("TrayWindow: CreateCoreWebView2Controller 失败, res=0x{:08X}", static_cast<unsigned>(res));
+                                return E_FAIL;
+                            }
                             if (generation != m_generation.load() || !m_hwnd || !IsWindow(m_hwnd)) {
-                                controller->Close();
+                                if (controller) controller->Close();
                                 return E_ABORT;
                             }
                             m_controller = controller;
@@ -381,6 +388,7 @@ void TrayWindow::initializeWebView2() {
 
                             KeyboardPipeline::applyWebKeyboardPolicy(m_controller.Get(), false);
                             m_webViewReady = true;
+                            LOG_INFO("TrayWindow: WebView2 渲染环境已就绪");
                             return S_OK;
                         }
                     ).Get());
@@ -430,18 +438,24 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
             }
             return 0;
         case WM_ACTIVATEAPP:
+            if (!inst.m_webViewReady.load()) break; // 渲染就绪前严禁失焦误杀
             if (wParam == FALSE && inst.m_visible.load()) {
                 const uint64_t elapsed = GetTickCount64() - inst.m_showTimeTick;
                 if (elapsed >= 100) {
+                    const HWND foreground = GetForegroundWindow();
+                    if (isTaskbarOrOverflowWindow(foreground)) break;
                     inst.hide();
                 }
             }
             break;
         case WM_ACTIVATE:
             if (LOWORD(wParam) == WA_INACTIVE) {
+                if (!inst.m_webViewReady.load()) break; // 渲染就绪前严禁失焦误杀
                 if (inst.m_visible.load()) {
                     const uint64_t elapsed = GetTickCount64() - inst.m_showTimeTick;
                     if (elapsed >= 100) {
+                        const HWND foreground = GetForegroundWindow();
+                        if (isTaskbarOrOverflowWindow(foreground)) break;
                         inst.hide();
                     }
                 }
@@ -453,11 +467,15 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
             }
             break;
         case WM_KILLFOCUS:
+            if (!inst.m_webViewReady.load()) break; // 渲染就绪前严禁失焦误杀
             if (inst.m_visible.load()) {
                 HWND newFocus = reinterpret_cast<HWND>(wParam);
                 if (newFocus != hwnd && (!newFocus || !IsChild(hwnd, newFocus))) {
+                    if (isTaskbarOrOverflowWindow(newFocus)) break;
                     const uint64_t elapsed = GetTickCount64() - inst.m_showTimeTick;
                     if (elapsed >= 100) {
+                        const HWND foreground = GetForegroundWindow();
+                        if (isTaskbarOrOverflowWindow(foreground)) break;
                         inst.hide();
                     }
                 }
@@ -467,6 +485,10 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
             if (wParam == IDT_TRAY_AUTOHIDE) {
                 if (!inst.m_visible.load()) {
                     KillTimer(hwnd, IDT_TRAY_AUTOHIDE);
+                    break;
+                }
+                // 渲染就绪前严禁失焦误杀（对齐 SearchWindow 哨兵防御）
+                if (!inst.m_webViewReady.load()) {
                     break;
                 }
                 const uint64_t elapsed = GetTickCount64() - inst.m_showTimeTick;
@@ -485,6 +507,11 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                     RECT winRc{};
                     GetWindowRect(hwnd, &winRc);
                     if (!PtInRect(&winRc, curPt)) {
+                        HWND ptWnd = WindowFromPoint(curPt);
+                        if (isTaskbarOrOverflowWindow(ptWnd)) {
+                            // 点击在任务栏或托盘图标区域时，交由任务栏原生点击消息 (NIN_SELECT / WM_LBUTTONUP) 自主处理 Toggle 收起，杜绝按下瞬间被误杀后抬起又重新唤起的弹跳死锁
+                            break;
+                        }
                         inst.hide();
                         KillTimer(hwnd, IDT_TRAY_AUTOHIDE);
                         break;
@@ -494,6 +521,10 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 // 2. 外部前台切换判定：若前台窗口不是本窗口且不是本窗口的子控件，立即收起
                 const HWND foreground = GetForegroundWindow();
                 if (foreground && foreground != hwnd && !IsChild(hwnd, foreground)) {
+                    // 前台为任务栏或托盘溢出窗口时予以豁免，杜绝开机初期由于 Explorer 占有所导致的 100ms/350ms 自杀式收起
+                    if (isTaskbarOrOverflowWindow(foreground)) {
+                        break;
+                    }
                     DWORD fgPid = 0;
                     GetWindowThreadProcessId(foreground, &fgPid);
                     if (fgPid != GetCurrentProcessId()) {

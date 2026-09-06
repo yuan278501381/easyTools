@@ -158,6 +158,7 @@ void TrayIcon::recreate() {
 }
 
 void TrayIcon::destroy() {
+    EndMenu();
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
     }
@@ -214,13 +215,27 @@ void TrayIcon::handleMessage(WPARAM wParam, LPARAM lParam) {
             break;
         }
 
-        case NIN_SELECT:
-        case WM_LBUTTONUP:
-            // 左键单击：若托盘菜单已处于打开状态，则平滑收起；否则不弹出右键菜单
+        case NIN_SELECT: {
+            // 现代协议左键单击：若托盘卡片可见则平滑收起；若未可见则直接呼出托盘卡片，彻底消除 No-Op 空操作造成的卡死错觉
             if (easy::ui::TrayWindow::instance().isVisible()) {
                 easy::ui::TrayWindow::instance().hide();
+            } else {
+                int x = GET_X_LPARAM(wParam);
+                int y = GET_Y_LPARAM(wParam);
+                showContextMenu(x, y);
             }
             break;
+        }
+
+        case WM_LBUTTONUP: {
+            // 传统协议左键单击：若托盘卡片可见则平滑收起；若未可见则呼出托盘卡片（自适应定位）
+            if (easy::ui::TrayWindow::instance().isVisible()) {
+                easy::ui::TrayWindow::instance().hide();
+            } else {
+                showContextMenu();
+            }
+            break;
+        }
 
         case NIN_KEYSELECT:
         case WM_LBUTTONDBLCLK:
@@ -250,7 +265,7 @@ void TrayIcon::showContextMenu(int x, int y) {
 
     POINT pt{ x, y };
     bool validCoords = false;
-    if (x != -1 || y != -1) {
+    if ((x != -1 || y != -1) && (x != 0 || y != 0)) {
         if (MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != nullptr) {
             validCoords = true;
         }
@@ -286,13 +301,15 @@ void TrayIcon::showContextMenu(int x, int y) {
         }
     }
 
-    // 如果用户按住 Shift 键右键，直接呼出零延迟 Windows 原生上下文菜单
-    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+    // 1. 如果用户按住 Shift 键，显式呼出 Windows 原生右键菜单
+    // 2. 自愈降级双保险链路：若 WebView2 尚未渲染就绪（例如初始化延迟或故障环境），
+    //    0ms 自动平滑降级调用 showNativeContextMenu(pt)，确保在任何极端环境下右键 100% 必弹出、必响应！
+    if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) || !easy::ui::TrayWindow::instance().isWebViewReady()) {
         showNativeContextMenu(pt);
         return;
     }
 
-    // 优先调用现代 WebView2 磨砂质感托盘窗口
+    // 正常状态调用现代 WebView2 磨砂质感托盘卡片
     easy::ui::TrayWindow::instance().show(GetModuleHandleW(nullptr), pt.x, pt.y);
 }
 
@@ -314,6 +331,7 @@ void TrayIcon::showNativeContextMenu(POINT pt) {
     InsertMenuW(hMenu, 9, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
     InsertMenuW(hMenu, 10, MF_BYPOSITION | MF_STRING, static_cast<UINT_PTR>(TrayMenuId::Exit), isEn ? L"Exit EasyTools" : L"退出 EasyTools");
 
+    LOG_INFO("呼出 Windows 原生托盘快捷菜单 (自愈降级/Shift直通管线)");
     SetForegroundWindow(m_hwnd);
     UINT selected = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, m_hwnd, nullptr);
     PostMessageW(m_hwnd, WM_NULL, 0, 0);
@@ -325,6 +343,7 @@ void TrayIcon::showNativeContextMenu(POINT pt) {
 }
 
 void TrayIcon::fireCallback(TrayMenuId id) {
+    EndMenu();
     auto it = m_callbacks.find(id);
     if (it != m_callbacks.end() && it->second) {
         try {

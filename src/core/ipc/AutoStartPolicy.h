@@ -163,6 +163,11 @@ inline bool registerTaskCOM(const std::wstring& exePath) {
             if (SUCCEEDED(pAction->QueryInterface(IID_IExecAction, (void**)&pExecAction)) && pExecAction) {
                 pExecAction->put_Path(_bstr_t(exePath.c_str()));
                 pExecAction->put_Arguments(_bstr_t(L"--silent"));
+                const std::filesystem::path p(exePath);
+                const std::wstring workingDir = p.parent_path().wstring();
+                if (!workingDir.empty()) {
+                    pExecAction->put_WorkingDirectory(_bstr_t(workingDir.c_str()));
+                }
                 pExecAction->Release();
             }
             pAction->Release();
@@ -350,6 +355,17 @@ inline bool taskTargetsExecutable(std::wstring_view taskXml,
     const auto command = xmlElement(taskXml, L"Command");
     return command && normalizeExecutablePath(*command) ==
                           normalizeExecutablePath(executable.wstring());
+}
+
+inline std::optional<std::wstring> taskWorkingDirectory(std::wstring_view taskXml) {
+    return xmlElement(taskXml, L"WorkingDirectory");
+}
+
+inline bool taskTargetsWorkingDirectory(std::wstring_view taskXml,
+                                        const std::filesystem::path& workingDir) {
+    const auto dir = taskWorkingDirectory(taskXml);
+    return dir && normalizeExecutablePath(*dir) ==
+                      normalizeExecutablePath(workingDir.wstring());
 }
 
 } // namespace easy::core::autostart

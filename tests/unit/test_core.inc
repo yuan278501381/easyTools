@@ -276,6 +276,22 @@ TEST(AutoStartPolicyTest, DecodesXmlEscapesInExecutablePath) {
     EXPECT_EQ(easy::core::autostart::decodeXml(L"&quot;&apos;&lt;&gt;&amp;"), L"\"'<>&");
 }
 
+TEST(AutoStartPolicyTest, ExtractsWorkingDirectoryFromTaskXml) {
+    const std::wstring xmlWithDir =
+        LR"(<Task><Actions><Exec><Command>"C:\Program Files\EasyTools\EasyTools.exe"</Command><Arguments>--silent</Arguments><WorkingDirectory>C:\Program Files\EasyTools</WorkingDirectory></Exec></Actions></Task>)";
+    auto dir = easy::core::autostart::taskWorkingDirectory(xmlWithDir);
+    ASSERT_TRUE(dir.has_value());
+    EXPECT_EQ(*dir, L"C:\\Program Files\\EasyTools");
+    EXPECT_TRUE(easy::core::autostart::taskTargetsWorkingDirectory(
+        xmlWithDir, LR"(c:\program files\easytools)"));
+
+    const std::wstring xmlWithoutDir =
+        LR"(<Task><Actions><Exec><Command>C:\EasyTools.exe</Command></Exec></Actions></Task>)";
+    EXPECT_FALSE(easy::core::autostart::taskWorkingDirectory(xmlWithoutDir).has_value());
+    EXPECT_FALSE(easy::core::autostart::taskTargetsWorkingDirectory(
+        xmlWithoutDir, LR"(c:\easytools)"));
+}
+
 TEST(MessageBridgeTest, IPCChannelDispatch) {
     auto& bridge = easy::core::MessageBridge::instance();
     bridge.registerHandler("test.echo", [](const nlohmann::json& params) {
@@ -987,9 +1003,111 @@ TEST(TrayIconTest, ProductionClassStateMachineAndCallbacks) {
     tray.handleMessage(0, NIN_KEYSELECT);
     EXPECT_TRUE(settingsOpened.load());
 
+    // 5.9 优化左键单击防卡死：当托盘卡片未可见时，左键单击直接呼出托盘卡片
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+    tray.handleMessage(0, WM_LBUTTONUP);
+    EXPECT_TRUE(easy::ui::TrayWindow::instance().isVisible());
+    tray.handleMessage(0, WM_LBUTTONUP);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.10 现代协议 NIN_SELECT 左键单击：未可见时呼出，可见时收起
+    tray.handleMessage(0, NIN_SELECT);
+    EXPECT_TRUE(easy::ui::TrayWindow::instance().isVisible());
+    tray.handleMessage(0, NIN_SELECT);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.11 原生菜单自愈降级链路测试：当 WebView2 尚未渲染就绪时，右键/左键不呼出 TrayWindow，而是 0ms 自动降级为原生菜单
+    easy::ui::TrayWindow::instance().setWebViewReady(false);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isWebViewReady());
+    tray.handleMessage(0, WM_RBUTTONUP);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+    easy::ui::TrayWindow::instance().setWebViewReady(true);
+    EXPECT_TRUE(easy::ui::TrayWindow::instance().isWebViewReady());
+
     // 6. 生命周期销毁与复位测试
     tray.destroy();
     EXPECT_FALSE(tray.isCreated());
+}
+
+TEST(TrayWindowTest, IdentifiesTaskbarAndOverflowWindowClasses) {
+    EXPECT_FALSE(easy::ui::TrayWindow::isTaskbarOrOverflowWindow(nullptr));
+    EXPECT_FALSE(easy::ui::TrayWindow::isTaskbarOrOverflowWindow((HWND)(intptr_t)0xdeadbeef));
+
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"Test_NormalWindow";
+    RegisterClassExW(&wc);
+
+    HWND normalWnd = CreateWindowExW(0, L"Test_NormalWindow", L"", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr, hInst, nullptr);
+    if (normalWnd) {
+        EXPECT_FALSE(easy::ui::TrayWindow::isTaskbarOrOverflowWindow(normalWnd));
+        DestroyWindow(normalWnd);
+    }
+
+    // 覆盖全套任务栏与溢出区白名单类名 (Shell_TrayWnd, Shell_SecondaryTrayWnd, NotifyIconOverflowWindow, TopLevelWindowForOverflowXamlIsland)
+    const wchar_t* const whitelistClasses[] = {
+        L"Shell_TrayWnd",
+        L"Shell_SecondaryTrayWnd",
+        L"NotifyIconOverflowWindow",
+        L"TopLevelWindowForOverflowXamlIsland"
+    };
+
+    for (const auto* clsName : whitelistClasses) {
+        wc.lpszClassName = clsName;
+        if (RegisterClassExW(&wc)) {
+            HWND wnd = CreateWindowExW(0, clsName, L"", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr, hInst, nullptr);
+            if (wnd) {
+                EXPECT_TRUE(easy::ui::TrayWindow::isTaskbarOrOverflowWindow(wnd));
+
+                // 测试子控件向上追溯顶层根窗口能力 (GetAncestor GA_ROOT)
+                HWND childWnd = CreateWindowExW(0, L"Test_NormalWindow", L"", WS_CHILD, 0, 0, 5, 5, wnd, nullptr, hInst, nullptr);
+                if (childWnd) {
+                    EXPECT_TRUE(easy::ui::TrayWindow::isTaskbarOrOverflowWindow(childWnd));
+                    DestroyWindow(childWnd);
+                }
+                DestroyWindow(wnd);
+            }
+            UnregisterClassW(clsName, hInst);
+        }
+    }
+    UnregisterClassW(L"Test_NormalWindow", hInst);
+}
+
+TEST(UipiMessageFilterTest, AllowsSettingsWindowActivationMessages) {
+    constexpr UINT wmShowSettings = WM_APP + 101;
+    UINT msgBroadcast = RegisterWindowMessageW(L"EasyTools_ShowSettings_Broadcast");
+    EXPECT_NE(msgBroadcast, 0u);
+
+    // 1. 全局进程级 UIPI 豁免过滤 (MSGFLT_ADD)
+    BOOL resFilter = ChangeWindowMessageFilter(wmShowSettings, MSGFLT_ADD);
+    EXPECT_TRUE(resFilter);
+
+    BOOL resBroadcast = ChangeWindowMessageFilter(msgBroadcast, MSGFLT_ADD);
+    EXPECT_TRUE(resBroadcast);
+
+    // 2. 窗口句柄级 UIPI 精确放行豁免 (ChangeWindowMessageFilterEx / MSGFLT_ALLOW)
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"Test_UipiFilterMessageWindow";
+    if (RegisterClassExW(&wc)) {
+        HWND testWnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW, L"Test_UipiFilterMessageWindow", L"", WS_POPUP,
+            0, 0, 10, 10, nullptr, nullptr, hInst, nullptr);
+        if (testWnd) {
+            BOOL resEx1 = ChangeWindowMessageFilterEx(testWnd, wmShowSettings, MSGFLT_ALLOW, nullptr);
+            EXPECT_TRUE(resEx1);
+            BOOL resEx2 = ChangeWindowMessageFilterEx(testWnd, msgBroadcast, MSGFLT_ALLOW, nullptr);
+            EXPECT_TRUE(resEx2);
+            DestroyWindow(testWnd);
+        }
+        UnregisterClassW(L"Test_UipiFilterMessageWindow", hInst);
+    }
 }
 
 // -----------------------------------------------------------------------------
