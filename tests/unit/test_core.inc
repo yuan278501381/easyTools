@@ -893,19 +893,82 @@ TEST(TrayTest, NotificationAndBalloonDispatch) {
     wcscpy_s(nid.szTip, L"EasyTools Test");
 
     BOOL ok = Shell_NotifyIconW(NIM_ADD, &nid);
-    std::printf("[TrayTest] NIM_ADD with dynamic icon: ok=%d, err=%lu\n", ok, GetLastError());
     if (!ok) {
         nid.cbSize = NOTIFYICONDATAW_V3_SIZE;
         ok = Shell_NotifyIconW(NIM_ADD, &nid);
-        std::printf("[TrayTest] NIM_ADD with V3: ok=%d, err=%lu\n", ok, GetLastError());
     }
-    if (!ok && (GetLastError() == 2147500037 || GetLastError() == ERROR_ACCESS_DENIED)) {
-        std::printf("[TrayTest] Headless session detected (no active Shell_TrayWnd), skipping assertion.\n");
-        ok = TRUE;
+
+    HWND shellTrayWnd = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (shellTrayWnd != nullptr) {
+        // 在存在真实任务栏的交互桌面环境下，添加托盘图标必须 100% 成功，严禁任何失败！
+        EXPECT_TRUE(ok) << "Shell_NotifyIconW failed on interactive desktop with active taskbar! Error=" << GetLastError();
+    } else {
+        // 在纯无头 CI 沙箱环境下无 Shell_TrayWnd，记录环境特征并确保未崩溃
+        std::printf("[TrayTest] Headless session confirmed (Shell_TrayWnd is nullptr). NIM_ADD ok=%d, err=%lu\n", ok, GetLastError());
+    }
+
+    if (ok) {
+        Shell_NotifyIconW(NIM_DELETE, &nid);
     }
     DestroyIcon(hIcon);
     DestroyWindow(hwnd);
-    EXPECT_TRUE(ok);
+}
+
+TEST(TrayIconTest, ProductionClassStateMachineAndCallbacks) {
+    auto& tray = easy::tray::TrayIcon::instance();
+
+    // 1. 手势暂停状态机与 Tooltip 同步测试
+    tray.setGesturePaused(true);
+    EXPECT_TRUE(tray.isGesturePaused());
+    EXPECT_TRUE(tray.tooltip().find(L"暂停") != std::wstring::npos ||
+                tray.tooltip().find(L"Paused") != std::wstring::npos);
+
+    tray.setGesturePaused(false);
+    EXPECT_FALSE(tray.isGesturePaused());
+    EXPECT_TRUE(tray.tooltip().find(L"EasyTools") != std::wstring::npos);
+
+    // 2. 主题自适应图标刷新测试 (确保高频刷新安全不崩溃)
+    EXPECT_NO_THROW(tray.refreshThemeIcon());
+
+    // 3. 业务回调注册与分发测试
+    std::atomic<bool> settingsOpened{false};
+    std::atomic<bool> exited{false};
+    std::atomic<bool> searchOpened{false};
+
+    tray.onOpenSettings([&]() { settingsOpened.store(true); });
+    tray.onExit([&]() { exited.store(true); });
+    tray.onSearch([&]() { searchOpened.store(true); });
+
+    tray.fireCallback(easy::tray::TrayMenuId::OpenSettings);
+    EXPECT_TRUE(settingsOpened.load());
+
+    tray.fireCallback(easy::tray::TrayMenuId::Search);
+    EXPECT_TRUE(searchOpened.load());
+
+    tray.fireCallback(easy::tray::TrayMenuId::Exit);
+    EXPECT_TRUE(exited.load());
+
+    // 4. 回调异常隔离测试 (生产环境坚固防线：回调抛出异常必须被安全捕获，绝不能导致主进程崩溃)
+    tray.onScreenshot([]() { throw std::runtime_error("Simulated callback exception for testing fault barrier"); });
+    EXPECT_NO_THROW(tray.fireCallback(easy::tray::TrayMenuId::Screenshot));
+
+    // 5. 消息分发回路测试 (handleMessage)
+    // 5.1 左键双击应唤起设置
+    settingsOpened.store(false);
+    tray.handleMessage(0, WM_LBUTTONDBLCLK);
+    EXPECT_TRUE(settingsOpened.load());
+
+    // 5.2 右键单击应呼出托盘悬浮窗
+    tray.handleMessage(0, WM_RBUTTONUP);
+    EXPECT_TRUE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.3 再次左键单击应平滑收起悬浮窗
+    tray.handleMessage(0, WM_LBUTTONUP);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 6. 生命周期销毁与复位测试
+    tray.destroy();
+    EXPECT_FALSE(tray.isCreated());
 }
 
 // -----------------------------------------------------------------------------

@@ -1258,6 +1258,70 @@ TEST(MouseGestureLifecycleTest, FadeOutClockAndAlphaDecayLifecycle) {
     EXPECT_NEAR(gestureFadeAlpha(true, 210, holdMs, fadeMs), 0.0f, 0.001f);
 }
 
+TEST(MouseHookTest, EventPipelineAndTriggerMode) {
+    auto& hook = easy::gesture::MouseHook::instance();
+
+    // 1. 触发模式设置与自省测试
+    hook.setTriggerMode(easy::gesture::TriggerMode::RightOnly);
+    EXPECT_EQ(hook.triggerMode(), easy::gesture::TriggerMode::RightOnly);
+
+    hook.setTriggerMode(easy::gesture::TriggerMode::Both);
+    EXPECT_EQ(hook.triggerMode(), easy::gesture::TriggerMode::Both);
+
+    // 2. 暂停模式测试 (Paused 状态下所有注入事件直接放行不拦截)
+    hook.setPaused(true);
+    EXPECT_TRUE(hook.isPaused());
+
+    easy::gesture::MouseEvent downEvent{};
+    downEvent.type = easy::gesture::MouseEventType::RightDown;
+    downEvent.position = {100, 100};
+    downEvent.timestamp = std::chrono::steady_clock::now();
+
+    // 处于暂停状态，injectEventForTesting 必须返回 false (放行)
+    EXPECT_FALSE(hook.injectEventForTesting(downEvent));
+
+    hook.setPaused(false);
+    EXPECT_FALSE(hook.isPaused());
+
+    // 3. 事件捕获与回调拦截测试
+    std::atomic<int> receivedCount{0};
+    hook.setEventCallback([&](const easy::gesture::MouseEvent& ev) -> bool {
+        receivedCount.fetch_add(1);
+        if (ev.type == easy::gesture::MouseEventType::RightDown ||
+            ev.type == easy::gesture::MouseEventType::Move) {
+            return true; // 拦截右键和移动
+        }
+        return false;
+    });
+
+    // 注入右键按下
+    bool intercepted = hook.injectEventForTesting(downEvent);
+    EXPECT_TRUE(intercepted);
+    EXPECT_EQ(receivedCount.load(), 1);
+
+    // 注入移动事件
+    easy::gesture::MouseEvent moveEvent{};
+    moveEvent.type = easy::gesture::MouseEventType::Move;
+    moveEvent.position = {120, 150};
+    moveEvent.timestamp = std::chrono::steady_clock::now();
+    intercepted = hook.injectEventForTesting(moveEvent);
+    EXPECT_TRUE(intercepted);
+    EXPECT_EQ(receivedCount.load(), 2);
+
+    // 注入右键抬起事件
+    easy::gesture::MouseEvent upEvent{};
+    upEvent.type = easy::gesture::MouseEventType::RightUp;
+    upEvent.position = {120, 150};
+    upEvent.timestamp = std::chrono::steady_clock::now();
+    intercepted = hook.injectEventForTesting(upEvent);
+    EXPECT_FALSE(intercepted); // 回调返回 false
+    EXPECT_EQ(receivedCount.load(), 3);
+
+    // 清理回调与状态复位
+    hook.setEventCallback(nullptr);
+    hook.resetTriggerState();
+}
+
 // -----------------------------------------------------------------------------
 // 29. 按键回显全生命周期、高频连击合并与静默释放测试套件
-// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------

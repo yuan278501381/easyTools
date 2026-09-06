@@ -574,6 +574,12 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
         case WM_CLOSE:
             inst.hide();
             return 0;
+        case WM_KEYDOWN:
+            if (wParam == VK_ESCAPE) {
+                inst.hide();
+                return 0;
+            }
+            break;
         case WM_SEARCH_VERIFY_DEACTIVATED: {
             const bool isPinned = inst.m_isPinned.load() || (GetPropW(hwnd, L"EasyTools_SearchPinned") != nullptr);
             if (isPinned) break; // 启用图钉时，窗口永远显示，绝对不失焦隐藏

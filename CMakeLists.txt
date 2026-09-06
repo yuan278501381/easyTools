@@ -305,6 +305,8 @@ if(BUILD_TESTING)
         src/ui/SpotlightOverlayInputController.cpp
         src/ui/SpotlightOverlayRenderer.cpp
         src/keycast/KeycastOverlay.cpp
+        src/tray/TrayIcon.cpp
+        src/gesture/MouseHook.cpp
     )
     target_include_directories(EasyToolsTests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_include_directories(EasyToolsTests PRIVATE ${FFMPEG_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})

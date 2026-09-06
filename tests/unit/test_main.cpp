@@ -118,6 +118,23 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include "gesture/MouseHook.h"
+#include "tray/TrayIcon.h"
+#include "ui/TrayWindow.h"
+
+namespace easy::ui {
+TrayWindow& TrayWindow::instance() {
+    static TrayWindow inst;
+    return inst;
+}
+void TrayWindow::preload(HINSTANCE) {}
+void TrayWindow::show(HINSTANCE, int, int) { m_visible.store(true); }
+void TrayWindow::setContentSize(int, int) {}
+void TrayWindow::hide() { m_visible.store(false); }
+bool TrayWindow::isVisible() const { return m_visible.load(); }
+void TrayWindow::destroy() { m_visible.store(false); }
+}
+
 using namespace easy::gesture;
 
 // ─────────────────────────────────────────────────────────────────────────────

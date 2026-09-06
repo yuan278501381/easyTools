@@ -111,6 +111,9 @@ public:
     /// 显式复位触发键状态（防止取消或异常时按键状态失步）
     void resetTriggerState() noexcept;
 
+    /// 测试与模拟注入接口（直接注入事件，绕过 WH_MOUSE_LL，用于单元测试与自动化验证）
+    bool injectEventForTesting(const MouseEvent& event);
+
 private:
     MouseHook() = default;
     MouseHook(const MouseHook&) = delete;

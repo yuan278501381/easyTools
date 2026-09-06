@@ -433,4 +433,11 @@ bool MouseHook::processEvent(const MouseEvent& event) {
     return false;
 }
 
+bool MouseHook::injectEventForTesting(const MouseEvent& event) {
+    if (m_paused.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    return processEvent(event);
+}
+
 }  // namespace easy::gesture

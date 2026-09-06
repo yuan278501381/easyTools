@@ -1439,6 +1439,10 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         easy::tray::TrayIcon::instance().handleMessage(wParam, lParam);
         return 0;
     }
+    if (msg == WM_COMMAND) {
+        easy::tray::TrayIcon::instance().fireCallback(static_cast<easy::tray::TrayMenuId>(LOWORD(wParam)));
+        return 0;
+    }
 
     if (msg == WM_TIMER) {
         if (wParam == TIMER_ID_PERFORMANCE_BASELINE) {

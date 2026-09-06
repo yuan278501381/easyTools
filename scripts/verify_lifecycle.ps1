@@ -19,6 +19,7 @@ using System.Runtime.InteropServices;
 public static class LifecycleHarness {
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", SetLastError=true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
@@ -224,6 +225,53 @@ function Invoke-HarnessHotkey($Process, [string]$Name) {
     }
 }
 
+function Test-StartupLogCleanliness([string]$LogPath) {
+    $hasShellTray = $false
+    try {
+        $trayHwnd = [LifecycleHarness]::FindWindowW("Shell_TrayWnd", $null)
+        $hasShellTray = ($trayHwnd -ne [IntPtr]::Zero)
+    } catch {
+        $hasShellTray = $true
+    }
+
+    if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
+        return
+    }
+
+    $logLines = Get-Content -LiteralPath $LogPath -Encoding UTF8 -ErrorAction SilentlyContinue
+    if (-not $logLines) { return }
+
+    if ($hasShellTray) {
+        $trayErrors = @($logLines | Where-Object {
+            $_ -match "创建/更新托盘图标未成功" -or
+            $_ -match "0x80004005" -or
+            $_ -match "启动自愈定时器"
+        })
+        if ($trayErrors.Count -gt 0) {
+            Write-Host "❌ 启动日志纯净度门禁 (Zero-Warning Log Gate) 拦截到托盘创建异常：" -ForegroundColor Red
+            foreach ($err in $trayErrors) {
+                Write-Host "  -> $err" -ForegroundColor Red
+            }
+            throw "待测实例在交互式物理桌面启动时托盘图标创建失败，严禁带有托盘异常的进程通过门禁！"
+        }
+        Write-Host "✅ 启动日志纯净度门禁 PASS (托盘图标零警告/零自愈异常)" -ForegroundColor Green
+    } else {
+        Write-Host "ℹ️ 检测到当前处于无头或沙箱环境 (无 Shell_TrayWnd)，跳过交互任务栏图标断言" -ForegroundColor DarkGray
+    }
+
+    $criticalErrors = @($logLines | Where-Object {
+        $_ -match "\[fatal\]" -or
+        $_ -match "panic"
+    })
+    if ($criticalErrors.Count -gt 0) {
+        Write-Host "❌ 启动日志中检测到致命错误：" -ForegroundColor Red
+        foreach ($err in $criticalErrors) {
+            Write-Host "  -> $err" -ForegroundColor Red
+        }
+        throw "待测实例启动日志包含致命错误，门禁阻断！"
+    }
+}
+
 # 动态感知隔离配置中的快捷键绑定；首次运行使用产品默认值。
 $configPath = $HarnessConfigPath
 $config = @{}
@@ -255,6 +303,10 @@ if ($proc.HasExited) {
     exit 1
 }
 Write-Host "✅ EasyTools 启动成功 (PID: $($proc.Id))" -ForegroundColor Green
+
+# 启动日志纯净度门禁：断言在交互桌面环境下启动严禁出现托盘创建失败警告或自愈定时器
+$initialLogPath = Join-Path $HarnessDataRoot "logs\easytools.log"
+Test-StartupLogCleanliness -LogPath $initialLogPath
 
 # WebView 预加载、设置页状态查询和普通应用启动都不能提前拉起重型索引进程。
 $serviceBeforeSearch = Get-HarnessSearchServices
@@ -423,11 +475,17 @@ foreach ($item in $dumpList) {
 Write-Host "✅ 顶层窗口诊断清单记录完成" -ForegroundColor Green
 
 # 5. 优雅退出与主进程收尾
-Write-Host "`n── [5/5] 托盘退出与主进程收尾 ──" -ForegroundColor Yellow
+Write-Host "`n── [5/5] 托盘消息交互、真实退出命令与主进程收尾 ──" -ForegroundColor Yellow
 $msgHwnd = [LifecycleHarness]::FindMessageWindowForProcess([uint32]$proc.Id)
 if ($msgHwnd -ne [IntPtr]::Zero) {
-    Write-Host "  -> 向主消息窗口 (0x$($msgHwnd.ToString('X8'))) 发送 WM_CLOSE" -ForegroundColor DarkGray
-    [void][LifecycleHarness]::PostMessageW($msgHwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) # WM_CLOSE
+    # 5.1 验证向主窗口投递 WM_TRAYICON (WM_USER + 100 = 0x0464) 消息回路 (模拟托盘右键单击 WM_RBUTTONUP 0x0205)
+    Write-Host "  -> 向主消息窗口 (0x$($msgHwnd.ToString('X8'))) 投递 WM_TRAYICON (WM_RBUTTONUP) 验证托盘处理回路" -ForegroundColor DarkGray
+    [void][LifecycleHarness]::PostMessageW($msgHwnd, 0x0464, [IntPtr]1, [IntPtr]0x0205)
+    Start-Sleep -Milliseconds 200
+
+    # 5.2 发送真实托盘菜单退出命令 (WM_COMMAND 0x0111, ID=1099 为 TrayMenuId::Exit)
+    Write-Host "  -> 向主消息窗口投递真实托盘退出命令 (WM_COMMAND, ID=1099 [TrayMenuId::Exit])" -ForegroundColor DarkGray
+    [void][LifecycleHarness]::PostMessageW($msgHwnd, 0x0111, [IntPtr]1099, [IntPtr]::Zero)
 } else {
     Write-Host "❌ 找不到主消息窗口，不能用强杀代替优雅退出生命周期验证！" -ForegroundColor Red
     Stop-Process -Id $searchServicePid -Force -ErrorAction SilentlyContinue
@@ -448,6 +506,8 @@ if (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) {
     exit 1
 } else {
     Write-Host "✅ 退出收尾测试 PASS ($elapsed 秒内主进程干净退出)" -ForegroundColor Green
+    $finalLogPath = Join-Path $HarnessDataRoot "logs\easytools.log"
+    Test-StartupLogCleanliness -LogPath $finalLogPath
 }
 
 if (-not (Get-Process -Id $searchServicePid -ErrorAction SilentlyContinue)) {

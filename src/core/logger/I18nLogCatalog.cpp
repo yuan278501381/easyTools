@@ -2569,6 +2569,10 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] avio_closep 关闭输出文件失败: error={}",
             "[{}] avio_closep failed to close output file: error={}"
         }},
+        {"截图覆盖层 BitBlt 受系统环境限制 (error={})，启用安全底图兜底", {
+            "[{}] 截图覆盖层 BitBlt 受系统环境限制 (error={})，启用安全底图兜底",
+            "[{}] Capture overlay BitBlt restricted by system environment (error={}), activating safe fallback background"
+        }},
     };
     return catalog;
 }

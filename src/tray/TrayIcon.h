@@ -68,6 +68,10 @@ public:
 
     /// 同步手势暂停状态（用于菜单勾选和提示文字）
     void setGesturePaused(bool paused);
+    bool isGesturePaused() const { return m_gesturePaused; }
+
+    /// 获取当前提示文本（用于状态断言）
+    std::wstring tooltip() const { return m_nid.szTip; }
 
     /// 根据当前 Windows 任务栏深浅主题热刷新托盘图标
     void refreshThemeIcon();
