@@ -88,8 +88,8 @@ chinesesimplified.ContinueUninstall=继续卸载
 english.ContinueUninstall=Continue Uninstall
 chinesesimplified.AutoStartProgram=开机自动启动 EasyTools
 english.AutoStartProgram=Start EasyTools automatically on Windows startup
-chinesesimplified.TypeFull=完整体验安装 (推荐 · 默认启用全部 6 大模块)
-english.TypeFull=Full Installation (Recommended - All 6 Modules Enabled)
+chinesesimplified.TypeFull=完整体验安装 (推荐 · 默认启用全部 7 大核心模块)
+english.TypeFull=Full Installation (Recommended - All 7 Core Modules Enabled)
 chinesesimplified.TypeCompact=极简轻量安装
 english.TypeCompact=Compact Installation
 chinesesimplified.TypeCustom=自定义模块选择
@@ -106,6 +106,8 @@ chinesesimplified.CompDialog=文件对话框增强 (Dialog Enhancer) — 常用�
 english.CompDialog=File Dialog Enhancer (Dialog) — Quick folders & path memory
 chinesesimplified.CompSpotlight=演示专用特效 (Spotlight) — 屏幕聚光灯聚焦、点击水波纹与流光轨迹
 english.CompSpotlight=Presentation FX (Spotlight) — Screen spotlight focus, click ripple & mouse trails
+chinesesimplified.CompRemote=远程协助增强 (Remote Boost) — 主控端热键直通、修饰键急救冲刷与输入法脱敏
+english.CompRemote=Remote Boost (Remote) — Immersive hotkey tunnel, emergency flush & smart IME sanitizing
 
 [Types]
 Name: "full"; Description: "{cm:TypeFull}"
@@ -119,6 +121,7 @@ Name: "gesture"; Description: "{cm:CompGesture}"; Types: full
 Name: "keycast"; Description: "{cm:CompKeycast}"; Types: full
 Name: "dialogenhancer"; Description: "{cm:CompDialog}"; Types: full
 Name: "spotlight"; Description: "{cm:CompSpotlight}"; Types: full
+Name: "remote"; Description: "{cm:CompRemote}"; Types: full
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -321,8 +324,8 @@ end;
 procedure SyncInitialModuleConfig();
 var
   AppDir, InitialModulesPath: String;
-  SearchSel, CaptureSel, GestureSel, KeycastSel, DialogSel, SpotlightSel: Boolean;
-  SearchStr, CaptureStr, GestureStr, KeycastStr, DialogStr, SpotlightStr: String;
+  SearchSel, CaptureSel, GestureSel, KeycastSel, DialogSel, SpotlightSel, RemoteSel: Boolean;
+  SearchStr, CaptureStr, GestureStr, KeycastStr, DialogStr, SpotlightStr, RemoteStr: String;
   JsonContent: String;
 begin
   AppDir := ExpandConstant('{app}');
@@ -334,6 +337,7 @@ begin
   KeycastSel := WizardIsComponentSelected('keycast');
   DialogSel := WizardIsComponentSelected('dialogenhancer');
   SpotlightSel := WizardIsComponentSelected('spotlight');
+  RemoteSel := WizardIsComponentSelected('remote');
 
   if SearchSel then SearchStr := 'true' else SearchStr := 'false';
   if CaptureSel then CaptureStr := 'true' else CaptureStr := 'false';
@@ -341,6 +345,7 @@ begin
   if KeycastSel then KeycastStr := 'true' else KeycastStr := 'false';
   if DialogSel then DialogStr := 'true' else DialogStr := 'false';
   if SpotlightSel then SpotlightStr := 'true' else SpotlightStr := 'false';
+  if RemoteSel then RemoteStr := 'true' else RemoteStr := 'false';
 
   JsonContent :=
     '{' + #13#10 +
@@ -349,7 +354,8 @@ begin
     '    "capture": { "enabled": ' + CaptureStr + ' },' + #13#10 +
     '    "gesture": { "enabled": ' + GestureStr + ' },' + #13#10 +
     '    "keycast": { "enabled": ' + KeycastStr + ' },' + #13#10 +
-    '    "dialogenhancer": { "enabled": ' + DialogStr + ' }' + #13#10 +
+    '    "dialogenhancer": { "enabled": ' + DialogStr + ' },' + #13#10 +
+    '    "remote_boost": { "enabled": ' + RemoteStr + ' }' + #13#10 +
     '  },' + #13#10 +
     '  "search": {' + #13#10 +
     '    "enabled": ' + SearchStr + ',' + #13#10 +
@@ -358,6 +364,9 @@ begin
     '  "gesture": { "enabled": ' + GestureStr + ' },' + #13#10 +
     '  "dialog": { "enabled": ' + DialogStr + ' },' + #13#10 +
     '  "spotlight": { "enabled": ' + SpotlightStr + ' },' + #13#10 +
+    '  "remote_boost": {' + #13#10 +
+    '    "enabled": ' + RemoteStr + '' + #13#10 +
+    '  },' + #13#10 +
     '  "general": {' + #13#10 +
     '    "keycastEnabled": ' + KeycastStr + '' + #13#10 +
     '  }' + #13#10 +

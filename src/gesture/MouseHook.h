@@ -163,12 +163,10 @@ private:
     std::atomic<bool> m_installed{false};
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_triggerButtonDown{false};
-    std::atomic<TriggerMode> m_configuredTriggerMode{TriggerMode::Both};
+    std::atomic<TriggerMode> m_configuredTriggerMode{TriggerMode::RightOnly};
     std::atomic<MouseEventType> m_configuredTriggerDown{MouseEventType::RightDown};
     std::atomic<MouseEventType> m_activeTriggerDown{MouseEventType::RightDown};
-    std::atomic<uint32_t> m_activeTriggerMask{
-        GestureTriggerMask::Right | GestureTriggerMask::EdgeTopSlide
-    };
+    std::atomic<uint32_t> m_activeTriggerMask{GestureTriggerMask::Right};
 
     HWND m_cachedForegroundWindow = nullptr;
     uint8_t m_cachedModifiers = 0;

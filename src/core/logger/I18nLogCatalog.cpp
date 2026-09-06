@@ -2621,6 +2621,10 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 创建 DirectComposition 轨迹表面失败: {}x{}, hr=0x{:X}",
             "[{}] Failed to create DirectComposition trail surface: {}x{}, hr=0x{:X}"
         }},
+        {"DirectComposition 离屏表面 BeginDraw 失败, hr=0x{:X}", {
+            "[{}] DirectComposition 离屏表面 BeginDraw 失败, hr=0x{:X}",
+            "[{}] Failed to BeginDraw on DirectComposition offscreen surface, hr=0x{:X}"
+        }},
         {"手势轨迹已提交: points={}, {}x{}, dcomp={}", {
             "[{}] 手势轨迹已提交: points={}, {}x{}, dcomp={}",
             "[{}] Gesture trail committed: points={}, {}x{}, dcomp={}"

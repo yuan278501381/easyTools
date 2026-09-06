@@ -312,7 +312,7 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
       return {
         enabled: true,
         paused: false,
-        triggerButton: 'both',
+        triggerButton: 'right',
         trailVisible: true,
         targetMode: 'underPointer',
         elevated: false,

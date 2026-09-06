@@ -119,22 +119,30 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 检查是否需要显示首次引导
+  // 检查是否需要显示首次引导（综合判定首次运行或用户在通用设置中显式手动开启）
   useEffect(() => {
-    bridgeRequest<boolean>('config.get', { key: '/app/onboardingCompleted' })
-      .then((completed) => {
-        if (!completed) setShowOnboarding(true);
-      })
-      .catch(() => {
-        // 首次或查询失败时显示引导
+    let cancelled = false;
+    Promise.allSettled([
+      bridgeRequest<boolean>('config.get', { key: '/app/onboardingCompleted' }),
+      bridgeRequest<boolean>('config.get', { key: '/general/showOnboarding' }),
+    ]).then(([completedRes, showRes]) => {
+      if (cancelled) return;
+      const completed = completedRes.status === 'fulfilled' ? completedRes.value : false;
+      const explicitShow = showRes.status === 'fulfilled' ? showRes.value : false;
+      if (completed !== true || explicitShow === true) {
         setShowOnboarding(true);
-      });
+      }
+    }).catch(() => {
+      if (!cancelled) setShowOnboarding(true);
+    });
+    return () => { cancelled = true; };
   }, []);
 
   const handleOnboardingComplete = useCallback(() => {
     setShowOnboarding(false);
-    bridgeRequest('config.set', { key: '/app/onboardingCompleted', value: true })
-      .catch(console.error);
+    bridgeRequest('config.set', { key: '/app/onboardingCompleted', value: true }).catch(console.error);
+    bridgeRequest('config.set', { key: '/general/showOnboarding', value: false }).catch(console.error);
+    bridgeRequest('general.updateSettings', { showOnboarding: false }).catch(console.error);
   }, []);
 
   // 监听系统主题变化；只在“跟随系统”时影响最终主题。

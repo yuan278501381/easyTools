@@ -791,7 +791,11 @@ bool GestureTrailOverlay::ensureToastSurfaceLocked(int width, int height) {
     return true;
 }
 
-bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
+bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom,
+                                     const std::vector<TrailPoint>& points,
+                                     bool isRecognized,
+                                     bool& alreadyRendered) {
+    alreadyRendered = false;
     if (m_virtualW <= 0 || m_virtualH <= 0) {
         m_virtualX = GetSystemMetrics(SM_XVIRTUALSCREEN);
         m_virtualY = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -799,43 +803,18 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
         m_virtualH = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     }
 
-    // 只为笔迹附近分配分层位图。256px 网格和 96px 余量让普通手势
-    // 通常一次分配即可完成，同时避免把 4K/超宽屏约 30MB 的整屏 DIB
-    // 在每一帧重新上传给 DWM。
-    constexpr int kGrid = 256;
-    constexpr int kPad = 96;
-    constexpr int kMin = 512;
-    constexpr int kScreenMargin = 64; // 允许表面向屏幕外扩展呼吸空间，彻底消除边界裁剪
-    left = snapDown(left - kPad, kGrid);
-    top = snapDown(top - kPad, kGrid);
-    right = snapUp(right + kPad, kGrid);
-    bottom = snapUp(bottom + kPad, kGrid);
-
-    left = (std::max)(left, m_virtualX - kScreenMargin);
-    top = (std::max)(top, m_virtualY - kScreenMargin);
-    right = (std::min)(right, m_virtualX + m_virtualW + kScreenMargin);
-    bottom = (std::min)(bottom, m_virtualY + m_virtualH + kScreenMargin);
-
-    auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
-                                  int boundBegin, int boundEnd) {
-        if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
-        end = (std::min)(boundEnd, begin + minExtent);
-        begin = (std::max)(boundBegin, end - minExtent);
-    };
-    ensureMinimumExtent(left, right, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
-    ensureMinimumExtent(top, bottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
-
     const int neededW = (std::max)(1, right - left);
     const int neededH = (std::max)(1, bottom - top);
+
+    // 1. DirectComposition GPU 直通管线
     if (m_compositorReady && m_dcompDevice && m_trailDcompVisual) {
+        // 1.1 如果当前表面已存在且已完全包含当前轨迹（含边界裕量），无需扩容
         if (m_strokeSurfaceLive.load(std::memory_order_relaxed)) {
             if (overlaySurfaceContains(left, top, right, bottom,
                                        m_originX, m_originY, m_width, m_height) &&
                 m_trailDcompSurface) {
                 return true;
             }
-            growOverlayRect(left, top, right, bottom,
-                            m_originX, m_originY, m_width, m_height);
         } else if (overlaySurfaceContains(left, top, right, bottom,
                                           m_originX, m_originY, m_width, m_height) &&
                    overlayCanReuseSurface(neededW, neededH, m_width, m_height, 4) &&
@@ -844,30 +823,107 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
             return true;
         }
 
-        const int targetW = (std::max)(1, right - left);
-        const int targetH = (std::max)(1, bottom - top);
-        m_trailDcompSurface.Reset();
+        // 1.2 扩容阶段：阶梯扩容 512px，增设 96px 滞后回差防抖
+        constexpr int kGrid = 512;
+        constexpr int kPad = 96;
+        constexpr int kMin = 512;
+        constexpr int kScreenMargin = 64;
+
+        int expLeft = snapDown(left - kPad, kGrid);
+        int expTop = snapDown(top - kPad, kGrid);
+        int expRight = snapUp(right + kPad, kGrid);
+        int expBottom = snapUp(bottom + kPad, kGrid);
+
+        expLeft = (std::max)(expLeft, m_virtualX - kScreenMargin);
+        expTop = (std::max)(expTop, m_virtualY - kScreenMargin);
+        expRight = (std::min)(expRight, m_virtualX + m_virtualW + kScreenMargin);
+        expBottom = (std::min)(expBottom, m_virtualY + m_virtualH + kScreenMargin);
+
+        auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
+                                      int boundBegin, int boundEnd) {
+            if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
+            end = (std::min)(boundEnd, begin + minExtent);
+            begin = (std::max)(boundBegin, end - minExtent);
+        };
+        ensureMinimumExtent(expLeft, expRight, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
+        ensureMinimumExtent(expTop, expBottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
+
+        if (m_strokeSurfaceLive.load(std::memory_order_relaxed) && m_width > 0 && m_height > 0) {
+            growOverlayRect(expLeft, expTop, expRight, expBottom,
+                            m_originX, m_originY, m_width, m_height);
+        }
+
+        const int targetW = (std::max)(1, expRight - expLeft);
+        const int targetH = (std::max)(1, expBottom - expTop);
+
+        // 1.3 原子离屏双缓冲机制：
+        // 保持旧表面挂载在 Visual 上继续正常显示，在离屏新表面上完成全部绘制后原子切换并提交，
+        // 彻底根除窗口原点迁移与空白帧导致的闪烁和撕裂！
+        Microsoft::WRL::ComPtr<IDCompositionSurface> newSurface;
         HRESULT hr = m_dcompDevice->CreateSurface(
             static_cast<UINT>(targetW), static_cast<UINT>(targetH),
             DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
-            m_trailDcompSurface.GetAddressOf());
-        if (FAILED(hr) || !m_trailDcompSurface) {
+            newSurface.GetAddressOf());
+        if (FAILED(hr) || !newSurface) {
             LOG_WARN("创建 DirectComposition 轨迹表面失败: {}x{}, hr=0x{:X}", targetW, targetH, hr);
             return false;
         }
-        m_trailDcompVisual->SetContent(m_trailDcompSurface.Get());
-        m_trailDcompW = targetW;
-        m_trailDcompH = targetH;
-        m_originX = left;
-        m_originY = top;
-        m_width = targetW;
-        m_height = targetH;
-        m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
 
-        SetWindowPos(m_hwnd, nullptr, m_originX, m_originY, m_width, m_height,
-                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-        return true;
+        POINT offset{};
+        Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurf;
+        hr = newSurface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);
+        if (SUCCEEDED(hr) && dxgiSurf) {
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            Microsoft::WRL::ComPtr<ID2D1RenderTarget> gpuRt;
+            if (SUCCEEDED(m_d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurf.Get(), rtProps, gpuRt.GetAddressOf())) && gpuRt) {
+                gpuRt->BeginDraw();
+                gpuRt->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
+                gpuRt->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+                m_originX = expLeft;
+                m_originY = expTop;
+
+                drawTrailGeometry(gpuRt.Get(), points, isRecognized, m_fadeAlpha);
+                gpuRt->EndDraw();
+            }
+            newSurface->EndDraw();
+
+            // 原子挂载新表面至 Visual，并同步窗口几何位置与尺寸
+            m_trailDcompVisual->SetContent(newSurface.Get());
+            m_trailDcompW = targetW;
+            m_trailDcompH = targetH;
+            m_originX = expLeft;
+            m_originY = expTop;
+            m_width = targetW;
+            m_height = targetH;
+            m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
+
+            SetWindowPos(m_hwnd, nullptr, m_originX, m_originY, m_width, m_height,
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            m_dcompDevice->Commit();
+
+            // 提交成功后安全析构释放旧表面
+            m_trailDcompSurface = newSurface;
+
+            if (!IsWindowVisible(m_hwnd)) {
+                ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+            }
+            m_visible.store(true, std::memory_order_release);
+            alreadyRendered = true;
+            return true;
+        } else {
+            LOG_WARN("DirectComposition 离屏表面 BeginDraw 失败, hr=0x{:X}", hr);
+            return false;
+        }
     }
+
+    // 2. GDI 降级管线
+    constexpr int kGrid = 512;
+    constexpr int kPad = 96;
+    constexpr int kMin = 512;
+    constexpr int kScreenMargin = 64;
 
     if (m_strokeSurfaceLive.load(std::memory_order_relaxed)) {
         if (overlaySurfaceContains(left, top, right, bottom,
@@ -875,10 +931,33 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
             m_renderTarget && m_memoryBitmap) {
             return true;
         }
-        growOverlayRect(left, top, right, bottom,
-                        m_originX, m_originY, m_width, m_height);
+
+        int expLeft = snapDown(left - kPad, kGrid);
+        int expTop = snapDown(top - kPad, kGrid);
+        int expRight = snapUp(right + kPad, kGrid);
+        int expBottom = snapUp(bottom + kPad, kGrid);
+
+        expLeft = (std::max)(expLeft, m_virtualX - kScreenMargin);
+        expTop = (std::max)(expTop, m_virtualY - kScreenMargin);
+        expRight = (std::min)(expRight, m_virtualX + m_virtualW + kScreenMargin);
+        expBottom = (std::min)(expBottom, m_virtualY + m_virtualH + kScreenMargin);
+
+        auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
+                                      int boundBegin, int boundEnd) {
+            if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
+            end = (std::min)(boundEnd, begin + minExtent);
+            begin = (std::max)(boundBegin, end - minExtent);
+        };
+        ensureMinimumExtent(expLeft, expRight, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
+        ensureMinimumExtent(expTop, expBottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
+
+        if (m_width > 0 && m_height > 0) {
+            growOverlayRect(expLeft, expTop, expRight, expBottom,
+                            m_originX, m_originY, m_width, m_height);
+        }
+
         const bool ok = recreateBitmapLocked(
-            left, top, (std::max)(1, right - left), (std::max)(1, bottom - top));
+            expLeft, expTop, (std::max)(1, expRight - expLeft), (std::max)(1, expBottom - expTop));
         if (ok) m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
         return ok;
     }
@@ -891,7 +970,26 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom) {
         return true;
     }
 
-    const bool ok = recreateBitmapLocked(left, top, neededW, neededH);
+    int expLeft = snapDown(left - kPad, kGrid);
+    int expTop = snapDown(top - kPad, kGrid);
+    int expRight = snapUp(right + kPad, kGrid);
+    int expBottom = snapUp(bottom + kPad, kGrid);
+
+    expLeft = (std::max)(expLeft, m_virtualX - kScreenMargin);
+    expTop = (std::max)(expTop, m_virtualY - kScreenMargin);
+    expRight = (std::min)(expRight, m_virtualX + m_virtualW + kScreenMargin);
+    expBottom = (std::min)(expBottom, m_virtualY + m_virtualH + kScreenMargin);
+
+    auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
+                                  int boundBegin, int boundEnd) {
+        if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
+        end = (std::min)(boundEnd, begin + minExtent);
+        begin = (std::max)(boundBegin, end - minExtent);
+    };
+    ensureMinimumExtent(expLeft, expRight, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
+    ensureMinimumExtent(expTop, expBottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
+
+    const bool ok = recreateBitmapLocked(expLeft, expTop, (std::max)(1, expRight - expLeft), (std::max)(1, expBottom - expTop));
     if (ok) m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
     return ok;
 }
@@ -1597,7 +1695,8 @@ bool GestureTrailOverlay::render() {
         right = (std::max)(right, static_cast<int>(p.x) + 1 + kSafetyMargin);
         bottom = (std::max)(bottom, static_cast<int>(p.y) + 1 + kSafetyMargin);
     }
-    if (!fitSurface(left, top, right, bottom)) return false;
+    bool alreadyRendered = false;
+    if (!fitSurface(left, top, right, bottom, points, isRecognized, alreadyRendered)) return false;
 
     {
         std::lock_guard trailLock(m_trailMutex);
@@ -1608,7 +1707,9 @@ bool GestureTrailOverlay::render() {
 
     bool renderedOk = false;
 
-    if (m_compositorReady && m_trailDcompSurface && m_dcompDevice) {
+    if (alreadyRendered) {
+        renderedOk = true;
+    } else if (m_compositorReady && m_trailDcompSurface && m_dcompDevice) {
         POINT offset{};
         ComPtr<IDXGISurface> dxgiSurf;
         HRESULT hr = m_trailDcompSurface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);

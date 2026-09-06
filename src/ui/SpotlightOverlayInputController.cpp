@@ -257,7 +257,6 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
         m_mmTimerId = timeSetEvent(ANIM_INTERVAL_MS, 1, onTimerTick, reinterpret_cast<DWORD_PTR>(this), TIME_PERIODIC | TIME_CALLBACK_FUNCTION);
         m_timerRunning = true;
     }
-    render();
 }
 
 void SpotlightOverlay::onMouseMove(POINT pt) {

@@ -1553,7 +1553,7 @@ void MessageBridge::registerBuiltinHandlers() {
             {"checkUpdates", config.get<bool>("/general/checkUpdates", true)},
             {"autoReleaseSettingsMemory", config.get<bool>("/general/autoReleaseSettingsMemory", true)},
             {"keycastEnabled", config.get<bool>("/general/keycastEnabled", true)},
-            {"showOnboarding", config.get<bool>("/general/showOnboarding", !config.get<bool>("/app/onboardingCompleted", false))},
+            {"showOnboarding", config.get<bool>("/general/showOnboarding", false)},
             {"isPortableMode", WinUtils::isPortableMode()},
             {"dataDirectory", WinUtils::wstringToUtf8(WinUtils::getAppDataDirectory().wstring())},
             {"language", config.get<std::string>("/general/language", "auto")},

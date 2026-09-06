@@ -114,7 +114,7 @@ export const GesturePage: FC = () => {
   const [minSegmentDistance, setMinSegmentDistance] = useState(24);
   const [scribbleCancel, setScribbleCancel] = useState(true);
   const [inFlightCompass, setInFlightCompass] = useState(true);
-  const [triggerButton, setTriggerButton] = useState('both');
+  const [triggerButton, setTriggerButton] = useState('right');
   const [trailColorMode, setTrailColorMode] = useState<'auto' | 'custom'>('auto');
   const [trailColor, setTrailColor] = useState('#3B82F6');
   const [trailWidth, setTrailWidth] = useState(2.5);
@@ -180,7 +180,7 @@ export const GesturePage: FC = () => {
       .then(([state, profileList, ruleList, radialRes, hotkeyList]) => {
         if (!isMounted) return;
         setEnabled(state.enabled);
-        setTriggerButton(state.triggerButton ?? 'both');
+        setTriggerButton(state.triggerButton ?? 'right');
         setTrailVisible(state.trailVisible ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
         setTargetMode(state.targetMode === 'foreground' ? 'foreground' : 'underPointer');
@@ -1061,7 +1061,7 @@ export const GesturePage: FC = () => {
                   <div className="trigger-pills-row">
                     {TRIGGER_ITEM_DEFINITIONS.map((item) => {
                       const st = getTriggerState(item.key);
-                      const isDefaultEnabled = item.key === 'right' || item.key === 'edge_top_slide';
+                      const isDefaultEnabled = item.key === 'right';
                       const isEffectiveEnabled = st === 'enabled' || (st === 'default' && isDefaultEnabled);
                       const itemName = item.nameKey ? tr(item.nameKey) : item.name;
 

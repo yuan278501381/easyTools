@@ -17,11 +17,11 @@ High-Performance Open-Source Productivity Suite for Windows 10/11
 
 </div>
 
-EasyTools is a **high-performance, native modular productivity toolkit** engineered for Windows. Built upon a native C++20 microkernel with Direct2D/D3D11 GPU rendering, paired with a React, TypeScript, and WebView2 glass UI, EasyTools seamlessly integrates **instant local file search, mouse gestures, screen capture & recording, file dialog enhancements, keystroke visualization, and pointer highlight effects** into one unified, rock-solid desktop application.
+EasyTools is a **high-performance, native modular productivity toolkit** engineered for Windows. Built upon a native C++20 microkernel with Direct2D/D3D11 GPU rendering, paired with a React, TypeScript, and WebView2 glass UI, EasyTools seamlessly integrates **instant local file search, mouse gestures, screen capture & recording, file dialog enhancements, keystroke visualization, pointer highlight effects, and remote desktop boost** into one unified, rock-solid desktop application.
 
 ---
 
-## 🌟 The 6 Core Modules Matrix
+## 🌟 The 7 Core Modules Matrix
 
 | Module | Key Capabilities | Scenarios & Technical Highlights |
 | :--- | :--- | :--- |
@@ -31,6 +31,7 @@ EasyTools is a **high-performance, native modular productivity toolkit** enginee
 | **📂 File Dialog Enhancer** | Smart path memory per host application; top floating glass ribbon for one-click jump to the active File Explorer folder | Eliminates the friction of repeatedly navigating deep directory paths when saving or opening files |
 | **⌨️ Keystroke Display (Keycast)** | Glass keycap badge overlay, in-row combo repeat counters (`Ctrl+C ×3`), physics damping motion; local heatmap & activity trends | Essential for tutorials, demos, presentations, and power coders; 100% offline privacy preservation |
 | **💡 Pointer Spotlight & FX** | Double-tap `Ctrl` to focus with a spotlight vignette; fluid click ripple diffusion; motion trail particles | Perfect for presentations, teaching, and live demos; 1-pixel geometric avoidance prevents Focus Assist triggers |
+| **🖥️ Remote Desktop Boost** | Immersive host hotkey tunneling, 11-channel modifier key emergency flush, and smart remote IME sanitizing | Unilateral host-side enhancement without remote software installation; double-tap Right-Ctrl instantly resolves stuck remote Alt/Win/Shift keys |
 
 ---
 
@@ -134,7 +135,7 @@ EasyTools is a **high-performance, native modular productivity toolkit** enginee
 <p align="center">
   <img src="docs/images/en-US/tray_quick_menu.png" alt="EasyTools Tray Quick Menu" width="240" />
 </p>
-<p align="center"><sub>System tray quick menu: toggle all 6 core modules and access frequent actions instantly.</sub></p>
+<p align="center"><sub>System tray quick menu: toggle all 7 core modules and access frequent actions instantly.</sub></p>
 
 ---
 

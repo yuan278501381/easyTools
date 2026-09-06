@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Search, Camera, Mouse, Sparkles, FolderSymlink,
   Keyboard, Highlighter, ChevronRight, ChevronLeft, Check, Zap,
+  Cast, RotateCcw, Languages,
 } from 'lucide-react';
 import './OnboardingModal.css';
 
@@ -26,6 +27,7 @@ const TOTAL_STEPS = 4;
 export const OnboardingModal: FC<Props> = ({ onComplete }) => {
   const { t } = useTranslation();
   const [step, setStep] = useState(0);
+  const [showcaseTab, setShowcaseTab] = useState<'spotlight' | 'remote'>('spotlight');
   const cardRef = useRef<HTMLDivElement>(null);
   const titleRefs = useRef<Array<HTMLHeadingElement | null>>([]);
 
@@ -43,9 +45,31 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
         event.preventDefault();
         onComplete();
       } else if (event.key === 'ArrowRight') {
+        const isTab = document.activeElement?.getAttribute('role') === 'tab';
+        if (isTab) {
+          event.preventDefault();
+          setShowcaseTab((current) => {
+            const nextTab = current === 'spotlight' ? 'remote' : 'spotlight';
+            const targetId = nextTab === 'spotlight' ? 'onboarding-tab-spotlight' : 'onboarding-tab-remote';
+            document.getElementById(targetId)?.focus();
+            return nextTab;
+          });
+          return;
+        }
         event.preventDefault();
         setStep((current) => Math.min(TOTAL_STEPS - 1, current + 1));
       } else if (event.key === 'ArrowLeft') {
+        const isTab = document.activeElement?.getAttribute('role') === 'tab';
+        if (isTab) {
+          event.preventDefault();
+          setShowcaseTab((current) => {
+            const nextTab = current === 'spotlight' ? 'remote' : 'spotlight';
+            const targetId = nextTab === 'spotlight' ? 'onboarding-tab-spotlight' : 'onboarding-tab-remote';
+            document.getElementById(targetId)?.focus();
+            return nextTab;
+          });
+          return;
+        }
         event.preventDefault();
         setStep((current) => Math.max(0, current - 1));
       } else if (event.key === 'Tab' && cardRef.current) {
@@ -101,7 +125,7 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
         </button>
 
         <div className="onboarding__body">
-          {/* ── Step 0: 欢迎 (6 宫格全旗舰功能矩阵) ───────────────── */}
+          {/* ── Step 0: 欢迎 (7 大核心旗舰能力矩阵闭环) ─────────── */}
           <div className={getStepClass(0)} aria-hidden={step !== 0}>
             <h2 id="onboarding-step-0-title" ref={(node) => { titleRefs.current[0] = node; }} tabIndex={-1} className="onboarding__title">{t('onboarding.welcomeTitle')}</h2>
             <p className="onboarding__subtitle">{t('onboarding.welcomeSubtitle')}</p>
@@ -115,13 +139,6 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
               </div>
               <div className="onboarding__feature-card">
                 <div className="onboarding__feature-icon">
-                  <Mouse size={20} />
-                </div>
-                <span className="onboarding__feature-name">{t('onboarding.featureGesture')}</span>
-                <span className="onboarding__feature-desc">{t('onboarding.featureGestureDesc')}</span>
-              </div>
-              <div className="onboarding__feature-card">
-                <div className="onboarding__feature-icon">
                   <Camera size={20} />
                 </div>
                 <span className="onboarding__feature-name">{t('onboarding.featureCapture')}</span>
@@ -129,10 +146,10 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
               </div>
               <div className="onboarding__feature-card">
                 <div className="onboarding__feature-icon">
-                  <Highlighter size={20} />
+                  <Mouse size={20} />
                 </div>
-                <span className="onboarding__feature-name">{t('onboarding.featureSpotlight')}</span>
-                <span className="onboarding__feature-desc">{t('onboarding.featureSpotlightDesc')}</span>
+                <span className="onboarding__feature-name">{t('onboarding.featureGesture')}</span>
+                <span className="onboarding__feature-desc">{t('onboarding.featureGestureDesc')}</span>
               </div>
               <div className="onboarding__feature-card">
                 <div className="onboarding__feature-icon">
@@ -147,6 +164,20 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
                 </div>
                 <span className="onboarding__feature-name">{t('onboarding.featureDialogEnhancer')}</span>
                 <span className="onboarding__feature-desc">{t('onboarding.featureDialogEnhancerDesc')}</span>
+              </div>
+              <div className="onboarding__feature-card">
+                <div className="onboarding__feature-icon">
+                  <Highlighter size={20} />
+                </div>
+                <span className="onboarding__feature-name">{t('onboarding.featureSpotlight')}</span>
+                <span className="onboarding__feature-desc">{t('onboarding.featureSpotlightDesc')}</span>
+              </div>
+              <div className="onboarding__feature-card">
+                <div className="onboarding__feature-icon">
+                  <Cast size={20} />
+                </div>
+                <span className="onboarding__feature-name">{t('onboarding.featureRemoteBoost')}</span>
+                <span className="onboarding__feature-desc">{t('onboarding.featureRemoteBoostDesc')}</span>
               </div>
             </div>
           </div>
@@ -191,6 +222,13 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
                 </span>
                 <kbd className="onboarding__shortcut-kbd">Ctrl + Shift + O</kbd>
               </div>
+              <div className="onboarding__shortcut-row">
+                <span className="onboarding__shortcut-name">
+                  <Cast size={14} style={{ color: '#818cf8', marginRight: 6 }} />
+                  {t('onboarding.shortcutRemoteFlush')}
+                </span>
+                <kbd className="onboarding__shortcut-kbd">Ctrl + Alt + Backspace</kbd>
+              </div>
             </div>
           </div>
 
@@ -233,38 +271,103 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
                 </div>
               </div>
 
-              {/* 右侧：屏幕演示特效 */}
+              {/* 右侧：屏幕演示与远程协助双模式展厅 */}
               <div className="onboarding__showcase-col">
                 <div className="onboarding__showcase-col-header">
-                  <Highlighter size={16} />
-                  <span>{t('onboarding.featureSpotlight')}</span>
-                </div>
-                <div className="onboarding__spotlight-list">
-                  <div className="onboarding__spotlight-item">
-                    <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8' }}>
-                      <Zap size={14} />
-                    </div>
-                    <span>{t('onboarding.spotlightItem1')}</span>
-                  </div>
-                  <div className="onboarding__spotlight-item">
-                    <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444' }}>
+                  <div className="onboarding__showcase-tabs" role="tablist" aria-label={t('onboarding.gestureTitle')}>
+                    <button
+                      type="button"
+                      role="tab"
+                      id="onboarding-tab-spotlight"
+                      aria-controls="onboarding-panel-spotlight"
+                      aria-selected={showcaseTab === 'spotlight'}
+                      tabIndex={showcaseTab === 'spotlight' ? 0 : -1}
+                      className={`onboarding__showcase-tab ${showcaseTab === 'spotlight' ? 'onboarding__showcase-tab--active' : ''}`}
+                      onClick={() => setShowcaseTab('spotlight')}
+                    >
                       <Highlighter size={14} />
-                    </div>
-                    <span>{t('onboarding.spotlightItem2')}</span>
-                  </div>
-                  <div className="onboarding__spotlight-item">
-                    <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(52, 211, 153, 0.15)', color: '#34d399' }}>
-                      <Sparkles size={14} />
-                    </div>
-                    <span>{t('onboarding.spotlightItem3')}</span>
-                  </div>
-                  <div className="onboarding__spotlight-item">
-                    <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(167, 139, 250, 0.15)', color: '#a78bfa' }}>
-                      <Keyboard size={14} />
-                    </div>
-                    <span>{t('onboarding.spotlightItem4')}</span>
+                      <span>{t('onboarding.tabSpotlight')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      id="onboarding-tab-remote"
+                      aria-controls="onboarding-panel-remote"
+                      aria-selected={showcaseTab === 'remote'}
+                      tabIndex={showcaseTab === 'remote' ? 0 : -1}
+                      className={`onboarding__showcase-tab ${showcaseTab === 'remote' ? 'onboarding__showcase-tab--active' : ''}`}
+                      onClick={() => setShowcaseTab('remote')}
+                    >
+                      <Cast size={14} />
+                      <span>{t('onboarding.tabRemote')}</span>
+                    </button>
                   </div>
                 </div>
+                {showcaseTab === 'spotlight' ? (
+                  <div
+                    id="onboarding-panel-spotlight"
+                    role="tabpanel"
+                    aria-labelledby="onboarding-tab-spotlight"
+                    className="onboarding__spotlight-list"
+                  >
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8' }}>
+                        <Zap size={14} />
+                      </div>
+                      <span>{t('onboarding.spotlightItem1')}</span>
+                    </div>
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444' }}>
+                        <Highlighter size={14} />
+                      </div>
+                      <span>{t('onboarding.spotlightItem2')}</span>
+                    </div>
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(52, 211, 153, 0.15)', color: '#34d399' }}>
+                        <Sparkles size={14} />
+                      </div>
+                      <span>{t('onboarding.spotlightItem3')}</span>
+                    </div>
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(167, 139, 250, 0.15)', color: '#a78bfa' }}>
+                        <Keyboard size={14} />
+                      </div>
+                      <span>{t('onboarding.spotlightItem4')}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    id="onboarding-panel-remote"
+                    role="tabpanel"
+                    aria-labelledby="onboarding-tab-remote"
+                    className="onboarding__spotlight-list"
+                  >
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8' }}>
+                        <Zap size={14} />
+                      </div>
+                      <span>{t('onboarding.remoteItem1')}</span>
+                    </div>
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444' }}>
+                        <RotateCcw size={14} />
+                      </div>
+                      <span>{t('onboarding.remoteItem2')}</span>
+                    </div>
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(52, 211, 153, 0.15)', color: '#34d399' }}>
+                        <Languages size={14} />
+                      </div>
+                      <span>{t('onboarding.remoteItem3')}</span>
+                    </div>
+                    <div className="onboarding__spotlight-item">
+                      <div className="onboarding__spotlight-icon-wrap" style={{ background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }}>
+                        <Cast size={14} />
+                      </div>
+                      <span>{t('onboarding.remoteItem4')}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -1051,7 +1051,7 @@ void GestureEngine::loadFromConfig() {
     bool paused = config.get<bool>("/gesture/paused",
                                    !config.get<bool>("/gesture/enabled", true));
     m_paused = paused;
-    setTriggerButton(config.get<std::string>("/gesture/triggerButton", "both"));
+    setTriggerButton(config.get<std::string>("/gesture/triggerButton", "right"));
     setTrailVisible(config.get<bool>("/gesture/trailVisible", true));
     setAutoBypassFullscreen(config.get<bool>("/gesture/autoBypassFullscreen", true));
     setTargetMode(config.get<std::string>("/gesture/targetMode", "underPointer"));
@@ -1156,7 +1156,7 @@ uint32_t GestureEngine::computeTriggerMask() const {
     if (isTriggerEnabled("xbutton2", defaultX2))        mask |= GestureTriggerMask::X2;
     if (isTriggerEnabled("left", defaultLeft))          mask |= GestureTriggerMask::Left;
 
-    if (isTriggerEnabled("edge_top_slide", true))       mask |= GestureTriggerMask::EdgeTopSlide;
+    if (isTriggerEnabled("edge_top_slide", false))      mask |= GestureTriggerMask::EdgeTopSlide;
     if (isTriggerEnabled("edge_bottom_slide", false))   mask |= GestureTriggerMask::EdgeBottomSlide;
     if (isTriggerEnabled("edge_left_slide", false))     mask |= GestureTriggerMask::EdgeLeftSlide;
     if (isTriggerEnabled("edge_right_slide", false))    mask |= GestureTriggerMask::EdgeRightSlide;

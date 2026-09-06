@@ -117,8 +117,11 @@ private:
     /// 渲染一帧。成功提交到屏幕后返回 true。
     bool render();
 
-    /// 按轨迹包围盒调整分层窗口与硬件表面
-    bool fitSurface(int left, int top, int right, int bottom);
+    /// 按轨迹包围盒调整分层窗口与硬件表面，支持原子离屏双缓冲无闪烁渲染
+    bool fitSurface(int left, int top, int right, int bottom,
+                    const std::vector<TrailPoint>& points,
+                    bool isRecognized,
+                    bool& alreadyRendered);
     bool recreateBitmapLocked(int x, int y, int width, int height);
     bool presentLayeredLocked(HWND hwnd, HDC memDC, int x, int y, int width, int height);
     void clearCanvasLocked();
