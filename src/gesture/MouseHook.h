@@ -1,20 +1,24 @@
 #pragma once
 // ─────────────────────────────────────────────────────────────────────────────
-// MouseHook — 低级鼠标钩子
+// MouseHook — 低级鼠标钩子 (接入核心独立输入线程与无锁 SPSC 环形队列)
 //
-// 使用 WH_MOUSE_LL 全局钩子拦截鼠标事件。
-// 为了决定是否吞掉触发键，识别状态机必须同步运行；所有渲染、动作执行和
-// 输入补发等昂贵操作都必须推迟到钩子回调返回后。
+// 职责:
+//   1. 接入全局单一输入源 (easy::core::MouseHook)，彻底根除双重全局钩子冗余
+//   2. 彻底铲除 3 秒假死与熔断陷阱，仅记录时间戳与坐标并极速返回
+//   3. 接入无锁单写单读环形队列缓冲 (SpscRingBuffer)，零锁、零阻塞
+//   4. 杜绝 1000Hz 鼠标移动高频广播竞争外部互斥锁
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef EASYTOOLS_GESTURE_MOUSEHOOK_H
 #define EASYTOOLS_GESTURE_MOUSEHOOK_H
 
+#include "core/utils/SpscRingBuffer.h"
+
 #include <windows.h>
 #include <functional>
 #include <atomic>
 #include <mutex>
-#include <queue>
+#include <vector>
 #include <chrono>
 
 namespace easy::gesture {
@@ -64,7 +68,7 @@ struct MouseEvent {
 /// 鼠标事件回调，返回 true 表示拦截此事件不传递给下层
 using MouseEventCallback = std::function<bool(const MouseEvent&)>;
 
-/// 钩子回调超时熔断后的复位通知。必须不在引擎互斥锁内调用。
+/// 故障重置通知 (保持 API 兼容)
 using MouseHookFaultCallback = std::function<void()>;
 
 /// 手势允许的触发按键模式
@@ -81,7 +85,7 @@ class MouseHook {
 public:
     static MouseHook& instance();
 
-    /// 安装鼠标钩子
+    /// 安装鼠标钩子 (接入核心独立输入线程)
     bool install();
 
     /// 卸载鼠标钩子
@@ -89,12 +93,12 @@ public:
 
     /// 暂停/恢复钩子处理（钩子仍安装，但不分发事件）
     void setPaused(bool paused);
-    bool isPaused() const { return m_paused.load(); }
+    bool isPaused() const { return m_paused.load(std::memory_order_relaxed); }
 
     /// 设置事件回调（由 GestureEngine 设置）
     void setEventCallback(MouseEventCallback callback);
 
-    /// 熔断触发时复位手势追踪，避免漏掉的抬起把下一笔手势永久吞掉
+    /// 保持向后兼容的故障回调
     void setFaultCallback(MouseHookFaultCallback callback);
 
     /// 设置触发键模式 (支持同时启用右键与中键)
@@ -102,11 +106,11 @@ public:
     void setTriggerButton(MouseEventType downEvent);
     TriggerMode triggerMode() const { return m_configuredTriggerMode.load(std::memory_order_relaxed); }
 
-    /// 获取事件队列中的待处理事件（批量获取，减少锁竞争）
+    /// 从无锁环形队列批量获取待处理事件
     std::vector<MouseEvent> drainEvents(size_t maxCount = 64);
 
     /// 钩子是否已安装
-    bool isInstalled() const { return m_hookHandle != nullptr; }
+    bool isInstalled() const;
 
     /// 显式复位触发键状态（防止取消或异常时按键状态失步）
     void resetTriggerState() noexcept;
@@ -114,18 +118,18 @@ public:
     /// 测试与模拟注入接口（直接注入事件，绕过 WH_MOUSE_LL，用于单元测试与自动化验证）
     bool injectEventForTesting(const MouseEvent& event);
 
+    /// 核心输入总线原生底层分发入口 (由 core::MouseHook 调用)
+    bool handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRUCT& data);
+
 private:
     MouseHook() = default;
     MouseHook(const MouseHook&) = delete;
     MouseHook& operator=(const MouseHook&) = delete;
 
-    /// 钩子回调（static，因为 SetWindowsHookEx 要求 C 风格函数指针）
-    static LRESULT CALLBACK lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
-
     /// 将事件入队或同步回调处理。返回 true 表示需要拦截
     bool processEvent(const MouseEvent& event);
 
-    HHOOK m_hookHandle = nullptr;
+    std::atomic<bool> m_installed{false};
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_triggerButtonDown{false};
     std::atomic<TriggerMode> m_configuredTriggerMode{TriggerMode::Both};
@@ -137,18 +141,10 @@ private:
     ScreenEdgeZone m_cachedEdgeZone = ScreenEdgeZone::None;
     bool m_cachedIsTopEdge = false;
 
-    // ── 防御性编程：超时熔断自愈 (Circuit Breaker) ──
-    std::atomic<bool> m_circuitBreakerTripped{false};
-    std::chrono::steady_clock::time_point m_circuitBreakerTime;
-    static constexpr int CIRCUIT_BREAKER_TIMEOUT_MS = 100;     // 触发熔断的执行耗时阈值 (100ms)
-    static constexpr int CIRCUIT_BREAKER_COOLDOWN_MS = 3000;   // 熔断冷却恢复时间 (3秒)
+    // 无锁单写单读环形队列缓冲 (Lock-Free SPSC Ring Buffer)
+    easy::core::SpscRingBuffer<MouseEvent, 2048> m_ringBuffer;
 
-    // 线程安全事件队列
-    std::mutex m_queueMutex;
-    std::queue<MouseEvent> m_eventQueue;
-    static constexpr size_t MAX_QUEUE_SIZE = 4096;  // 防止内存爆炸
-
-    // 直接回调模式（可选，用于低延迟场景）
+    // 直接回调模式
     MouseEventCallback m_callback;
     MouseHookFaultCallback m_faultCallback;
     std::mutex m_callbackMutex;

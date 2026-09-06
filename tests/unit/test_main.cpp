@@ -73,6 +73,7 @@
 #include "core/utils/PathOperations.h"
 #include "core/utils/ShellContextMenuService.h"
 #include "core/utils/UiThreadJoin.h"
+#include "core/utils/SpscRingBuffer.h"
 #include "core/lua/LuaEngine.h"
 #include "search/ServiceStartupPolicy.h"
 #include "service/PinyinEngine.h"

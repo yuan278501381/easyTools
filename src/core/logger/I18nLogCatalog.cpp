@@ -2573,6 +2573,82 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 截图覆盖层 BitBlt 受系统环境限制 (error={})，启用安全底图兜底",
             "[{}] Capture overlay BitBlt restricted by system environment (error={}), activating safe fallback background"
         }},
+        {"创建输入线程就绪事件失败, error={}", {
+            "[{}] 创建输入线程就绪事件失败, error={}",
+            "[{}] Failed to create input thread ready event, error={}"
+        }},
+        {"安装全局独立高优先级鼠标钩子失败", {
+            "[{}] 安装全局独立高优先级鼠标钩子失败",
+            "[{}] Failed to install global dedicated high-priority mouse hook"
+        }},
+        {"全局独立高优先级输入线程已启动，鼠标钩子安装成功 (THREAD_PRIORITY_HIGHEST)", {
+            "[{}] 全局独立高优先级输入线程已启动，鼠标钩子安装成功 (THREAD_PRIORITY_HIGHEST)",
+            "[{}] Global dedicated high-priority input thread started, mouse hook installed (THREAD_PRIORITY_HIGHEST)"
+        }},
+        {"SetWindowsHookExW(WH_MOUSE_LL) 失败, error={}", {
+            "[{}] SetWindowsHookExW(WH_MOUSE_LL) 失败, error={}",
+            "[{}] SetWindowsHookExW(WH_MOUSE_LL) failed, error={}"
+        }},
+        {"全局独立输入线程鼠标钩子已卸载", {
+            "[{}] 全局独立输入线程鼠标钩子已卸载",
+            "[{}] Global dedicated input thread mouse hook uninstalled"
+        }},
+        {"MouseHook 拦截器异常: {}", {
+            "[{}] MouseHook 拦截器异常: {}",
+            "[{}] MouseHook interceptor exception: {}"
+        }},
+        {"MouseHook 拦截器未知异常", {
+            "[{}] MouseHook 拦截器未知异常",
+            "[{}] MouseHook interceptor unknown exception"
+        }},
+        {"手势异步检测命中黑名单或全屏独占，取消手势并补发原按键", {
+            "[{}] 手势异步检测命中黑名单或全屏独占，取消手势并补发原按键",
+            "[{}] Gesture async check hit blacklist or exclusive fullscreen, canceling gesture and reinjecting original key"
+        }},
+        {"手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击", {
+            "[{}] 手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击",
+            "[{}] Gesture release detected window in blacklist or fullscreen bypass, restored to native click"
+        }},
+        {"创建手势渲染同步事件失败", {
+            "[{}] 创建手势渲染同步事件失败",
+            "[{}] Failed to create gesture render synchronization event"
+        }},
+        {"渲染线程创建手势覆盖层窗口失败", {
+            "[{}] 渲染线程创建手势覆盖层窗口失败",
+            "[{}] Render thread failed to create gesture overlay window"
+        }},
+        {"创建 DirectComposition 轨迹表面失败: {}x{}, hr=0x{:X}", {
+            "[{}] 创建 DirectComposition 轨迹表面失败: {}x{}, hr=0x{:X}",
+            "[{}] Failed to create DirectComposition trail surface: {}x{}, hr=0x{:X}"
+        }},
+        {"手势轨迹已提交: points={}, {}x{}, dcomp={}", {
+            "[{}] 手势轨迹已提交: points={}, {}x{}, dcomp={}",
+            "[{}] Gesture trail committed: points={}, {}x{}, dcomp={}"
+        }},
+        {"安装核心鼠标输入线程失败", {
+            "[{}] 安装核心鼠标输入线程失败",
+            "[{}] Failed to install core mouse input thread"
+        }},
+        {"手势低级鼠标钩子已接入全局单一输入源 (线程隔离 + 无锁 SPSC 环形队列已就绪)", {
+            "[{}] 手势低级鼠标钩子已接入全局单一输入源 (线程隔离 + 无锁 SPSC 环形队列已就绪)",
+            "[{}] Gesture low-level mouse hook connected to global single input source (thread isolation + lock-free SPSC queue ready)"
+        }},
+        {"手势低级鼠标钩子已卸载拦截器", {
+            "[{}] 手势低级鼠标钩子已卸载拦截器",
+            "[{}] Gesture low-level mouse hook uninstalled interceptor"
+        }},
+        {"手势鼠标钩子暂停状态: paused={}", {
+            "[{}] 手势鼠标钩子暂停状态: paused={}",
+            "[{}] Gesture mouse hook pause state: paused={}"
+        }},
+        {"预编译作用域窗口类正则失败: {}", {
+            "[{}] 预编译作用域窗口类正则失败: {}",
+            "[{}] Failed to precompile scope window class regex: {}"
+        }},
+        {"预编译作用域进程名正则失败: {}", {
+            "[{}] 预编译作用域进程名正则失败: {}",
+            "[{}] Failed to precompile scope process name regex: {}"
+        }},
     };
     return catalog;
 }

@@ -1323,5 +1323,256 @@ TEST(MouseHookTest, EventPipelineAndTriggerMode) {
 }
 
 // -----------------------------------------------------------------------------
-// 29. 按键回显全生命周期、高频连击合并与静默释放测试套件
+// 29. 无锁 SPSC 环形队列与溢出滑窗测试套件 (SpscRingBufferTest)
 // -----------------------------------------------------------------------------
+
+TEST(SpscRingBufferTest, BasicPushPopAndSlidingWindowOverflow) {
+    // 1. 基本单线程压入、弹出与容量边界测试
+    easy::core::SpscRingBuffer<int, 4> buffer;
+    EXPECT_TRUE(buffer.empty());
+    EXPECT_EQ(buffer.size(), 0u);
+    EXPECT_EQ(buffer.capacity(), 4u);
+
+    int val = 0;
+    EXPECT_FALSE(buffer.pop(val));
+
+    // 压入元素 10, 20, 30, 40
+    EXPECT_TRUE(buffer.push(10));
+    EXPECT_TRUE(buffer.push(20));
+    EXPECT_TRUE(buffer.push(30));
+    EXPECT_TRUE(buffer.push(40));
+    EXPECT_FALSE(buffer.empty());
+    EXPECT_EQ(buffer.size(), 4u);
+
+    // 2. 溢出滑动窗口测试 (push)：满载时压入 50，平滑推进 tail 丢弃最老元素 10
+    EXPECT_TRUE(buffer.push(50));
+    EXPECT_EQ(buffer.size(), 4u);
+
+    // 验证 FIFO 顺序：最老 10 已被滑窗丢弃，依次弹出 20, 30, 40, 50
+    EXPECT_TRUE(buffer.pop(val));
+    EXPECT_EQ(val, 20);
+    EXPECT_TRUE(buffer.pop(val));
+    EXPECT_EQ(val, 30);
+    EXPECT_TRUE(buffer.pop(val));
+    EXPECT_EQ(val, 40);
+    EXPECT_TRUE(buffer.pop(val));
+    EXPECT_EQ(val, 50);
+
+    EXPECT_TRUE(buffer.empty());
+    EXPECT_FALSE(buffer.pop(val));
+
+    // 3. 高并发多线程 SPSC 压测：1 生产者、1 消费者，10,000 数据无死锁、无破坏
+    constexpr int TOTAL_ITEMS = 10000;
+    easy::core::SpscRingBuffer<int, 64> concurrentBuf;
+    std::atomic<bool> producerDone{false};
+    std::vector<int> consumed;
+    consumed.reserve(TOTAL_ITEMS);
+
+    std::jthread consumer([&](std::stop_token) {
+        int item = 0;
+        while (!producerDone.load(std::memory_order_acquire) || !concurrentBuf.empty()) {
+            if (concurrentBuf.pop(item)) {
+                consumed.push_back(item);
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    for (int i = 0; i < TOTAL_ITEMS; ++i) {
+        while (!concurrentBuf.try_push(i)) {
+            std::this_thread::yield();
+        }
+    }
+    producerDone.store(true, std::memory_order_release);
+    consumer.join();
+
+    EXPECT_EQ(consumed.size(), static_cast<size_t>(TOTAL_ITEMS));
+    for (int i = 0; i < TOTAL_ITEMS; ++i) {
+        EXPECT_EQ(consumed[i], i);
+    }
+
+    // 4. 高并发多线程 SPSC 滑动窗口覆盖压测 (Concurrent Sliding-Window push)
+    easy::core::SpscRingBuffer<int, 64> slidingBuf;
+    std::atomic<bool> slidingDone{false};
+    std::atomic<int> popCount{0};
+
+    std::jthread slidingConsumer([&](std::stop_token) {
+        int item = 0;
+        int lastSeen = -1;
+        while (!slidingDone.load(std::memory_order_acquire) || !slidingBuf.empty()) {
+            if (slidingBuf.pop(item)) {
+                EXPECT_GT(item, lastSeen); // 验证即使被覆盖，剩余数据也严格保持单调递增 FIFO 顺序
+                lastSeen = item;
+                popCount.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    for (int i = 0; i < TOTAL_ITEMS; ++i) {
+        slidingBuf.push(i);
+        if (i % 32 == 0) std::this_thread::yield();
+    }
+    slidingDone.store(true, std::memory_order_release);
+    slidingConsumer.join();
+    EXPECT_GT(popCount.load(), 0);
+}
+
+// -----------------------------------------------------------------------------
+// 30. 作用域规则预编译正则优化与惰性上下文测试套件 (ScopeRuleRegexOptimizationTest)
+// -----------------------------------------------------------------------------
+
+TEST(ScopeRuleRegexOptimizationTest, PrecompiledRegexMatch) {
+    // 1. 作用域规则预编译正则构建与精确/通配匹配
+    easy::gesture::ScopeRule rule;
+    rule.name = "BrowserScope";
+    rule.processName = "*chrome*.exe";
+    rule.windowClass = "Chrome_WidgetWin_*";
+    rule.matchMode = easy::gesture::MatchMode::Wildcard;
+    rule.effect = easy::gesture::RuleEffect::UseProfile;
+    rule.profileName = "browser";
+
+    // 验证规则编译与通配匹配
+    EXPECT_TRUE(rule.matches(nullptr, L"chrome.exe", L""));
+    EXPECT_TRUE(rule.matches(nullptr, L"google_chrome_beta.exe", L""));
+    EXPECT_FALSE(rule.matches(nullptr, L"notepad.exe", L""));
+
+    EXPECT_TRUE(rule.matches(nullptr, L"", L"Chrome_WidgetWin_1"));
+    EXPECT_TRUE(rule.matches(nullptr, L"", L"Chrome_WidgetWin_0"));
+    EXPECT_FALSE(rule.matches(nullptr, L"", L"Notepad"));
+
+    // 2. 正则特殊字符安全转义稳定性（防元字符破坏）
+    easy::gesture::ScopeRule regexRule;
+    regexRule.name = "RegexSpecialChars";
+    regexRule.processName = "c++_test[1-9].exe";
+    regexRule.windowClass = "Window(Main)$";
+    regexRule.matchMode = easy::gesture::MatchMode::Wildcard;
+    // 通配模式下 '+' '[' ']' '(' ')' '$' 均被安全转义为字面量匹配
+    EXPECT_TRUE(regexRule.matches(nullptr, L"c++_test[1-9].exe", L""));
+    EXPECT_FALSE(regexRule.matches(nullptr, L"c++_test5.exe", L"")); // 字面量方括号，非正则字符集
+    EXPECT_TRUE(regexRule.matches(nullptr, L"", L"Window(Main)$"));
+
+    // 3. 空白规则不匹配
+    easy::gesture::ScopeRule emptyRule;
+    EXPECT_FALSE(emptyRule.matches(nullptr, L"anything.exe", L"AnyClass"));
+
+    // 4. 非法正则容灾测试 (确保 hot path 绝不重复动态编译并抛出异常)
+    easy::gesture::ScopeRule invalidRule;
+    invalidRule.windowClass = "Invalid(Regex[Unclosed";
+    invalidRule.processName = "Invalid(Proc[Unclosed";
+    invalidRule.matchMode = easy::gesture::MatchMode::Regex;
+    invalidRule.compileRegexes();
+    EXPECT_FALSE(invalidRule.matches(nullptr, L"proc.exe", L"Window"));
+    EXPECT_FALSE(invalidRule.matches(nullptr, L"proc.exe", L"Window"));
+
+    // 5. 引擎规则链管理
+    easy::gesture::ScopeRuleEngine engine;
+    engine.addRule(rule);
+    EXPECT_EQ(engine.getRules().size(), 1u);
+}
+
+// -----------------------------------------------------------------------------
+// 31. 核心独立输入线程与单钩子源拦截测试套件 (MouseHookDedicatedThreadTest)
+// -----------------------------------------------------------------------------
+
+TEST(MouseHookDedicatedThreadTest, SingleHookSourceAndFastInterception) {
+    auto& coreHook = easy::core::MouseHook::instance();
+    auto& gestureHook = easy::gesture::MouseHook::instance();
+
+    // 1. 验证单钩子源拦截器机制 (Interceptor Pipeline)
+    std::atomic<int> rawInterceptCount{0};
+    std::atomic<bool> shouldSwallow{false};
+
+    coreHook.setInterceptor([&](int nCode, WPARAM /*wParam*/, const MSLLHOOKSTRUCT& /*data*/) -> bool {
+        rawInterceptCount.fetch_add(1);
+        if (nCode >= 0 && shouldSwallow.load()) {
+            return true; // 拦截器拦截，不再广播给下游普通鼠标事件
+        }
+        return false;
+    });
+
+    // 模拟测试注入
+    MSLLHOOKSTRUCT testMs{};
+    testMs.pt = {500, 400};
+    testMs.time = GetTickCount();
+
+    // 处于非拦截模式：底层拦截器被触发但返回 false
+    shouldSwallow.store(false);
+    coreHook.injectRawEventForTesting(HC_ACTION, WM_MOUSEMOVE, testMs);
+    EXPECT_GE(rawInterceptCount.load(), 1);
+
+    // 处于拦截模式：返回 true，吞掉事件
+    shouldSwallow.store(true);
+    bool swallowed = coreHook.injectRawEventForTesting(HC_ACTION, WM_RBUTTONDOWN, testMs);
+    EXPECT_TRUE(swallowed);
+
+    // 清理拦截器
+    coreHook.setInterceptor(nullptr);
+
+    // 2. 验证手势鼠标钩子无熔断假死（无 CIRCUIT_BREAKER_COOLDOWN_MS 暴力休眠）
+    // 极速注入 100 次高频移动，耗时必须远小于 50ms（无假死、无睡眠）
+    auto startTick = std::chrono::steady_clock::now();
+    for (int i = 0; i < 100; ++i) {
+        easy::gesture::MouseEvent ev{};
+        ev.type = easy::gesture::MouseEventType::Move;
+        ev.position = {100 + i, 200 + i};
+        ev.timestamp = std::chrono::steady_clock::now();
+        gestureHook.injectEventForTesting(ev);
+    }
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startTick).count();
+    EXPECT_LT(elapsedMs, 50); // 100次注入必须极速在数毫秒内完成
+}
+
+// -----------------------------------------------------------------------------
+// 32. DirectComposition 表面生命周期与视口状态机测试套件 (DirectCompositionPipelineTest)
+// -----------------------------------------------------------------------------
+
+TEST(DirectCompositionPipelineTest, SurfaceLifecycleAndStateTransitions) {
+    // 1. 验证视口增量包围盒安全膨胀逻辑 (growOverlayRect)
+    int left = 100, top = 100, right = 200, bottom = 200;
+    easy::gesture::growOverlayRect(left, top, right, bottom, 50, 50, 100, 100);
+    EXPECT_EQ(left, 50);
+    EXPECT_EQ(top, 50);
+    EXPECT_EQ(right, 200);
+    EXPECT_EQ(bottom, 200);
+
+    // 向右下方扩展 (originX=300, width=100 -> right=400; originY=350, height=100 -> bottom=450)
+    easy::gesture::growOverlayRect(left, top, right, bottom, 300, 350, 100, 100);
+    EXPECT_EQ(left, 50);
+    EXPECT_EQ(top, 50);
+    EXPECT_EQ(right, 400);
+    EXPECT_EQ(bottom, 450);
+
+    // 2. 验证无边框分层窗口扩展样式规范化 (normalizeGestureOverlayExStyle)
+    LONG_PTR rawStyle = WS_EX_APPWINDOW;
+    LONG_PTR safeStyle = easy::gesture::normalizeGestureOverlayExStyle(rawStyle);
+    EXPECT_TRUE(easy::gesture::gestureOverlayIsTaskbarSafe(safeStyle));
+    EXPECT_EQ(safeStyle & WS_EX_APPWINDOW, 0);
+    EXPECT_NE(safeStyle & WS_EX_TOOLWINDOW, 0);
+    EXPECT_NE(safeStyle & WS_EX_NOACTIVATE, 0);
+
+    // 3. 验证淡出时钟生命周期 (gestureFadeAlpha, gestureFadeShouldFinish)
+    DWORD holdMs = 80;
+    DWORD fadeMs = 120;
+
+    // 首帧尚未就绪前，淡出时钟不可走完
+    EXPECT_FALSE(easy::gesture::gestureFrameReadyToFade(false, true, false));
+    EXPECT_TRUE(easy::gesture::gestureFrameReadyToFade(true, true, true));
+
+    // 刚松手 50ms（处于 Hold 驻留期）：Alpha 保持 1.0
+    EXPECT_FALSE(easy::gesture::gestureFadeShouldFinish(true, 50, holdMs, fadeMs));
+    EXPECT_NEAR(easy::gesture::gestureFadeAlpha(true, 50, holdMs, fadeMs), 1.0f, 0.001f);
+
+    // 处于淡出期 140ms（80ms + 60ms，即 50% 进度）：Alpha 平滑线性衰减
+    EXPECT_FALSE(easy::gesture::gestureFadeShouldFinish(true, 140, holdMs, fadeMs));
+    float midAlpha = easy::gesture::gestureFadeAlpha(true, 140, holdMs, fadeMs);
+    EXPECT_LT(midAlpha, 1.0f);
+    EXPECT_GT(midAlpha, 0.0f);
+
+    // 超过总时长 210ms（80ms + 120ms）：淡出彻底完成，Alpha 归零
+    EXPECT_TRUE(easy::gesture::gestureFadeShouldFinish(true, 210, holdMs, fadeMs));
+    EXPECT_NEAR(easy::gesture::gestureFadeAlpha(true, 210, holdMs, fadeMs), 0.0f, 0.001f);
+}

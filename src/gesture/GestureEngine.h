@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <future>
 
 namespace easy::gesture {
 
@@ -192,6 +193,30 @@ private:
     bool m_liveHadMatch = false;
     DWORD m_liveMatchTick = 0;
     PauseChangedCallback m_pauseChangedCallback;
+
+    // 异步上下文解析 (Lazy Context Resolution)
+    struct AsyncContextResult {
+        bool disabled = false;
+        HWND targetWindow = nullptr;
+        std::optional<GestureProfile> profile;
+    };
+    struct ContextJob {
+        uint64_t epoch = 0;
+        HWND initialFg = nullptr;
+        POINT startPt = {0, 0};
+    };
+    std::atomic<uint64_t> m_contextEpoch{0};
+    std::atomic<bool> m_contextResolved{false};
+    AsyncContextResult m_latestContextResult;
+    ContextJob m_pendingContextJob;
+    std::mutex m_contextMutex;
+    std::condition_variable m_contextCv;
+    std::mutex m_contextResultMutex;
+    std::condition_variable m_contextResultCv;
+    std::jthread m_contextWorker;
+
+    void contextWorkerLoop(std::stop_token stopToken);
+    AsyncContextResult resolveContextInternal(HWND initialFg, POINT startPt);
 
     // 轨迹可视化
     TrailRenderCallback m_trailCallback;

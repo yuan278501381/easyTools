@@ -51,6 +51,13 @@ struct ScopeRule {
     RuleEffect effect = RuleEffect::Enable;
     std::string profileName;     // effect == UseProfile 时使用的配置集名称
 
+    // 预编译正则与通配符缓存 (消除热路径动态编译开销)
+    mutable std::optional<std::wregex> compiledClassRegex;
+    mutable std::optional<std::wregex> compiledProcRegex;
+    mutable bool classRegexAttempted = false;
+    mutable bool procRegexAttempted = false;
+    void compileRegexes() const;
+
     /// 检查此规则是否匹配给定的窗口
     bool matches(HWND hwnd, const std::wstring& processName, const std::wstring& className) const;
 

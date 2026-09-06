@@ -9,40 +9,107 @@ MouseHook& MouseHook::instance() {
     return inst;
 }
 
-bool MouseHook::install() {
-    if (m_hookHandle) return true;
+MouseHook::~MouseHook() {
+    uninstall();
+}
 
-    m_hookHandle = SetWindowsHookExW(
+bool MouseHook::isPaused() const {
+    return m_paused.load(std::memory_order_relaxed);
+}
+
+bool MouseHook::isInstalled() const {
+    return m_hookHandle.load(std::memory_order_relaxed) != nullptr;
+}
+
+bool MouseHook::install() {
+    if (isInstalled()) return true;
+
+    HANDLE readyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!readyEvent) {
+        LOG_ERROR("创建输入线程就绪事件失败, error={}", GetLastError());
+        return false;
+    }
+
+    m_inputThread = std::jthread([this, readyEvent]() {
+        inputThreadWorker(readyEvent);
+    });
+
+    WaitForSingleObject(readyEvent, 3000);
+    CloseHandle(readyEvent);
+
+    if (!isInstalled()) {
+        LOG_ERROR("安装全局独立高优先级鼠标钩子失败");
+        uninstall();
+        return false;
+    }
+
+    LOG_INFO("全局独立高优先级输入线程已启动，鼠标钩子安装成功 (THREAD_PRIORITY_HIGHEST)");
+    return true;
+}
+
+void MouseHook::inputThreadWorker(HANDLE readyEvent) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    m_threadId.store(GetCurrentThreadId(), std::memory_order_release);
+
+    HHOOK hook = SetWindowsHookExW(
         WH_MOUSE_LL,
         lowLevelMouseProc,
         GetModuleHandleW(nullptr),
         0
     );
 
-    if (!m_hookHandle) {
-        LOG_ERROR("安装全局核心鼠标钩子失败, error={}", GetLastError());
-        return false;
+    if (hook) {
+        m_hookHandle.store(hook, std::memory_order_release);
+    } else {
+        LOG_ERROR("SetWindowsHookExW(WH_MOUSE_LL) 失败, error={}", GetLastError());
     }
 
-    LOG_INFO("全局核心鼠标钩子安装成功");
-    return true;
+    SetEvent(readyEvent);
+
+    if (!hook) {
+        m_threadId.store(0, std::memory_order_release);
+        return;
+    }
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (HHOOK h = m_hookHandle.exchange(nullptr, std::memory_order_acq_rel)) {
+        UnhookWindowsHookEx(h);
+    }
+    m_threadId.store(0, std::memory_order_release);
 }
 
 void MouseHook::uninstall() {
-    if (m_hookHandle) {
-        UnhookWindowsHookEx(m_hookHandle);
-        m_hookHandle = nullptr;
-        LOG_INFO("全局核心鼠标钩子已卸载");
+    DWORD tid = m_threadId.exchange(0, std::memory_order_acq_rel);
+    if (tid != 0) {
+        PostThreadMessageW(tid, WM_QUIT, 0, 0);
+        if (m_inputThread.joinable()) {
+            m_inputThread.join();
+        }
+    }
+
+    if (HHOOK h = m_hookHandle.exchange(nullptr, std::memory_order_acq_rel)) {
+        UnhookWindowsHookEx(h);
+        LOG_INFO("全局独立输入线程鼠标钩子已卸载");
     }
 }
 
 void MouseHook::setPaused(bool paused) {
-    m_paused.store(paused);
+    m_paused.store(paused, std::memory_order_relaxed);
 }
 
 void MouseHook::setMouseActivityCallback(std::function<void(int, long, long)> cb) {
     std::lock_guard lock(m_callbackMutex);
     m_activityCallback = std::move(cb);
+}
+
+void MouseHook::setInterceptor(MouseHookRawCallback interceptor) {
+    std::lock_guard lock(m_callbackMutex);
+    m_interceptor = std::move(interceptor);
 }
 
 LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -51,40 +118,43 @@ LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
     if (nCode == HC_ACTION && !self.m_paused.load(std::memory_order_relaxed)) {
         auto* data = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
         if (data) {
-            int button = -1;
-            bool isActivity = false;
-
-            switch (wParam) {
-                case WM_MOUSEMOVE:
-                    button = -1;
-                    isActivity = true;
-                    break;
-                case WM_LBUTTONDOWN:
-                    button = 0;
-                    isActivity = true;
-                    break;
-                case WM_RBUTTONDOWN:
-                    button = 1;
-                    isActivity = true;
-                    break;
-                case WM_MBUTTONDOWN:
-                    button = 2;
-                    isActivity = true;
-                    break;
-                default:
-                    break;
+            // 1. 优先调用上层拦截器 (如鼠标手势引擎识别管线)
+            MouseHookRawCallback interceptor;
+            {
+                std::lock_guard lock(self.m_callbackMutex);
+                interceptor = self.m_interceptor;
+            }
+            if (interceptor) {
+                try {
+                    if (interceptor(nCode, wParam, *data)) {
+                        return 1; // 彻底拦截，不传递给下层
+                    }
+                } catch (const std::exception& e) {
+                    LOG_ERROR("MouseHook 拦截器异常: {}", e.what());
+                } catch (...) {
+                    LOG_ERROR("MouseHook 拦截器未知异常");
+                }
             }
 
-            if (isActivity) {
+            // 2. 仅在按键按下时分发活动通知 (杜绝 1000Hz 移动时无脑广播竞争互斥锁)
+            int button = -1;
+            switch (wParam) {
+                case WM_LBUTTONDOWN: button = 0; break;
+                case WM_RBUTTONDOWN: button = 1; break;
+                case WM_MBUTTONDOWN: button = 2; break;
+                default: break;
+            }
+
+            if (button != -1) {
                 try {
-                    // 1. 同步回调
+                    std::function<void(int, long, long)> cb;
                     {
                         std::lock_guard lock(self.m_callbackMutex);
-                        if (self.m_activityCallback) {
-                            self.m_activityCallback(button, data->pt.x, data->pt.y);
-                        }
+                        cb = self.m_activityCallback;
                     }
-                    // 2. 发布 EventBus 事件
+                    if (cb) {
+                        cb(button, data->pt.x, data->pt.y);
+                    }
                     EventBus::instance().publish(MouseActivityEvent{button, data->pt.x, data->pt.y});
                 } catch (const std::exception& e) {
                     LOG_ERROR("MouseHook 活动事件分发异常: {}", e.what());
@@ -95,7 +165,12 @@ LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         }
     }
 
-    return CallNextHookEx(self.m_hookHandle, nCode, wParam, lParam);
+    HHOOK h = self.m_hookHandle.load(std::memory_order_relaxed);
+    return CallNextHookEx(h, nCode, wParam, lParam);
+}
+
+bool MouseHook::injectRawEventForTesting(int nCode, WPARAM wParam, const MSLLHOOKSTRUCT& data) {
+    return lowLevelMouseProc(nCode, wParam, reinterpret_cast<LPARAM>(&data)) != 0;
 }
 
 } // namespace easy::core

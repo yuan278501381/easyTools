@@ -1,16 +1,18 @@
 #pragma once
 // ─────────────────────────────────────────────────────────────────────────────
-// GestureTrailOverlay — 手势轨迹可视化覆盖层
+// GestureTrailOverlay — 手势轨迹可视化覆盖层 (自建 HWND + 原生 DirectComposition 硬件合成)
 //
 // 职责:
-//   1. 创建全屏透明 Layered Window
-//   2. 使用 Direct2D 绘制鼠标移动轨迹（彩色渐变线段）
-//   3. 手势完成后显示识别结果文字
-//   4. 自动淡出消失
+//   1. 渲染线程自建并独立持有 HWND (m_hwnd 与 m_toastHwnd)，彻底根除跨线程 HWND 亲和性互锁
+//   2. 激活原生 DirectComposition GPU 显存直通硬件合成 (IDCompositionDevice + DXGI Surface)
+//   3. 彻底废除 GDI CreateDIBSection 软表面、CPU 像素计算 ensurePremultipliedAlpha 与 UpdateLayeredWindow
+//   4. 0ms 按下即画，行云流水般的顺滑手绘流动感
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef EASYTOOLS_GESTURE_TRAILOVERLAY_H
 #define EASYTOOLS_GESTURE_TRAILOVERLAY_H
+
+#include "core/utils/SpscRingBuffer.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -24,6 +26,7 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
+#include <condition_variable>
 
 namespace easy::gesture {
 
@@ -50,7 +53,7 @@ class GestureTrailOverlay {
 public:
     static GestureTrailOverlay& instance();
 
-    /// 初始化（在主线程调用，创建窗口和 D2D 资源）
+    /// 初始化（在主线程调用，启动专用渲染管线）
     bool initialize(HINSTANCE hInstance);
 
     /// 关闭（销毁窗口和资源）
@@ -74,7 +77,7 @@ public:
     /// 创建 Direct2D 资源 (按需初始化)
     bool createD2DResources();
 
-    /// 释放 D2D 资源与大尺寸虚拟屏幕位图 (深度释放内存)
+    /// 释放 D2D 资源与大尺寸表面 (深度释放内存)
     void releaseD2DResources();
 
     /// 清空画布 (提交全透明帧)
@@ -86,7 +89,7 @@ public:
     /// 注入按键前暂时让出 TOPMOST，避免覆盖层挡住目标窗口取得前台。
     void yieldZOrderForInput();
 
-    /// 新一笔轨迹开始时把覆盖层拉回 TOPMOST 组（沉底后 WS_EX_TOPMOST 位可能仍在）。
+    /// 新一笔轨迹开始时把覆盖层拉回 TOPMOST 组。
     void raiseZOrderForDraw();
 
     /// 重新根据全局配置与主题加载画笔颜色
@@ -96,7 +99,10 @@ public:
     void setStyle(const TrailStyle& style);
 
     /// 是否正在显示
-    bool isVisible() const { return m_visible.load(); }
+    bool isVisible() const { return m_visible.load(std::memory_order_relaxed); }
+
+    /// DirectComposition 合成器是否就绪
+    bool isCompositorReady() const { return m_compositorReady; }
 
 private:
     GestureTrailOverlay() = default;
@@ -104,23 +110,24 @@ private:
     GestureTrailOverlay(const GestureTrailOverlay&) = delete;
     GestureTrailOverlay& operator=(const GestureTrailOverlay&) = delete;
 
-    /// 创建 Layered Window
+    /// 创建 Layered Window (在渲染线程内部调用)
     bool createOverlayWindow(HINSTANCE hInstance);
     bool updateTextFormat(float dpiScale);
 
     /// 渲染一帧。成功提交到屏幕后返回 true。
     bool render();
 
-    /// 按轨迹包围盒调整分层窗口与 DIB，避免每次提交整块虚拟屏。
+    /// 按轨迹包围盒调整分层窗口与硬件表面
     bool fitSurface(int left, int top, int right, int bottom);
     bool recreateBitmapLocked(int x, int y, int width, int height);
     bool presentLayeredLocked(HWND hwnd, HDC memDC, int x, int y, int width, int height);
     void clearCanvasLocked();
+
+    // ── DirectComposition GPU 显存直通硬件合成管线 ──
     bool ensureCompositorLocked();
-    bool presentCompositorLocked(HWND hwnd, const void* bits, int pitch,
-                                 int x, int y, int width, int height);
     void releaseCompositorSurfacesLocked();
     void releaseCompositorLocked();
+
     bool ensureToastSurfaceLocked(int width, int height);
     bool presentToastLocked(const std::string& resultText, bool recognized, bool excessive,
                             int toastCenterX, int toastCenterY, float toastScale);
@@ -128,21 +135,35 @@ private:
     void releaseToastSurfaceLocked();
     bool ensureToastTargetLocked();
 
+    /// 统一图元渲染核心 (供 DComp 与 GDI 降级管线复用)
+    void drawTrailGeometry(ID2D1RenderTarget* rt,
+                           const std::vector<TrailPoint>& points,
+                           bool isRecognized,
+                           float fadeAlpha);
+    void drawToastContent(ID2D1RenderTarget* rt,
+                          const std::string& resultText,
+                          bool isRecognized,
+                          bool excessive,
+                          int toastW, int toastH,
+                          float toastScale,
+                          float fadeAlpha);
+
     /// 根据当前配置重建 D2D 画笔。调用方必须已持有 m_renderMutex，且渲染目标有效。
     void applyThemeColorsLocked();
 
-    /// 在渲染线程执行真正的隐藏与资源释放，禁止从鼠标钩子调用
-    void applyHideOnRenderThread();
+    /// 在生命周期退场时执行真正的隐藏与资源释放，禁止从鼠标钩子调用
+    void applyHideOverlayState();
 
     /// 释放 D2D 资源。调用方必须已持有 m_renderMutex。
     void releaseD2DResourcesLocked();
 
-    /// 专用高优先级异步渲染循环 (彻底隔离鼠标钩子热路径，消除输入迟滞)
-    void renderLoop(std::stop_token stopToken);
+    /// 专用高优先级异步渲染循环 (独立持有 HWND 并驱动 DirectComposition)
+    void renderLoop(std::stop_token stopToken, HANDLE readyEvent);
 
     /// 窗口过程
     static LRESULT CALLBACK overlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+    HINSTANCE m_hInstance = nullptr;
     HWND m_helperOwnerHwnd = nullptr;
     HWND m_hwnd = nullptr;
     HWND m_toastHwnd = nullptr;
@@ -161,6 +182,8 @@ private:
     std::atomic<bool> m_fadeClockStarted{false};
     std::atomic<bool> m_themeDirty{true};
     std::atomic<bool> m_zOrderYielded{false};
+    std::atomic<bool> m_zOrderYieldRequested{false};
+    std::atomic<bool> m_zOrderRaiseRequested{false};
 
     // 专用异步渲染引擎
     std::jthread m_renderThread;
@@ -168,7 +191,7 @@ private:
     std::condition_variable m_renderCv;
     std::atomic<bool> m_renderRequested{false};
 
-    // 虚拟屏幕原点: 轨迹点是绝对屏幕坐标, 覆盖层左上角对应此原点, 绘制时需减去
+    // 虚拟屏幕原点
     int m_originX = 0;
     int m_originY = 0;
     int m_virtualX = 0;
@@ -177,7 +200,8 @@ private:
     int m_virtualH = 0;
     std::atomic<DWORD> m_lastWakeTick{0};
 
-    // 轨迹数据
+    // 轨迹数据与无锁 SPSC 环形队列缓冲
+    easy::core::SpscRingBuffer<TrailPoint, 2048> m_pointQueue;
     std::mutex m_trailMutex;
     std::vector<TrailPoint> m_points;
     std::string m_resultText;
@@ -205,6 +229,8 @@ private:
     HBITMAP m_toastOldBitmap = nullptr;
     void* m_toastBits = nullptr;
     int m_toastPitch = 0;
+
+    // DirectComposition 硬件合成设备与视口表面
     bool m_compositorReady = false;
     Microsoft::WRL::ComPtr<ID3D11Device> m_d3dDevice;
     Microsoft::WRL::ComPtr<IDCompositionDevice> m_dcompDevice;

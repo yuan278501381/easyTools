@@ -33,6 +33,44 @@ std::wstring wildcardToRegex(const std::wstring& pattern) {
 
 }  // namespace
 
+// ── ScopeRule::compileRegexes ────────────────────────────────────────────────
+
+void ScopeRule::compileRegexes() const {
+    if (!windowClass.empty()) {
+        classRegexAttempted = true;
+        std::wstring wideClass = easy::core::WinUtils::utf8ToWstring(windowClass);
+        try {
+            if (matchMode == MatchMode::Wildcard) {
+                compiledClassRegex.emplace(wildcardToRegex(wideClass), std::regex_constants::icase);
+            } else if (matchMode == MatchMode::Regex) {
+                compiledClassRegex.emplace(wideClass, std::regex_constants::icase);
+            }
+        } catch (const std::exception& error) {
+            LOG_WARN("预编译作用域窗口类正则失败: {}", error.what());
+            compiledClassRegex.reset();
+        } catch (...) {
+            compiledClassRegex.reset();
+        }
+    }
+
+    if (!processName.empty()) {
+        procRegexAttempted = true;
+        std::wstring wideProcName = easy::core::WinUtils::utf8ToWstring(processName);
+        try {
+            if (matchMode == MatchMode::Wildcard) {
+                compiledProcRegex.emplace(wildcardToRegex(wideProcName), std::regex_constants::icase);
+            } else if (matchMode == MatchMode::Regex) {
+                compiledProcRegex.emplace(wideProcName, std::regex_constants::icase);
+            }
+        } catch (const std::exception& error) {
+            LOG_WARN("预编译作用域进程名正则失败: {}", error.what());
+            compiledProcRegex.reset();
+        } catch (...) {
+            compiledProcRegex.reset();
+        }
+    }
+}
+
 // ── ScopeRule::matches ───────────────────────────────────────────────────────
 
 bool ScopeRule::matches(HWND hwnd, const std::wstring& procName, const std::wstring& className) const {
@@ -43,45 +81,33 @@ bool ScopeRule::matches(HWND hwnd, const std::wstring& procName, const std::wstr
         return hwnd == windowHandle;
     }
 
-    // 优先级 2: 窗口类名匹配
+    // 优先级 2: 窗口类名匹配 (使用预编译缓存)
     if (!windowClass.empty()) {
         std::wstring wideClass = easy::core::WinUtils::utf8ToWstring(windowClass);
         switch (matchMode) {
             case MatchMode::Exact:
                 if (className == wideClass) return true;
                 break;
-            case MatchMode::Wildcard: {
-                const std::wstring regexStr = wildcardToRegex(wideClass);
-                try {
-                    std::wregex re(regexStr, std::regex_constants::icase);
-                    if (std::regex_match(className, re)) return true;
-                } catch (const std::exception& error) {
-                    LOG_WARN("作用域窗口类通配符规则无效: {}", error.what());
-                } catch (...) {
-                    LOG_WARN("作用域窗口类通配符规则发生未知异常");
-                }
-                break;
-            }
+            case MatchMode::Wildcard:
             case MatchMode::Regex: {
-                try {
-                    std::wregex re(wideClass, std::regex_constants::icase);
-                    if (std::regex_match(className, re)) return true;
-                } catch (const std::exception& error) {
-                    LOG_WARN("作用域窗口类正则规则无效: {}", error.what());
-                } catch (...) {
-                    LOG_WARN("作用域窗口类正则规则发生未知异常");
+                if (!classRegexAttempted) {
+                    compileRegexes();
+                }
+                if (compiledClassRegex.has_value()) {
+                    try {
+                        if (std::regex_match(className, *compiledClassRegex)) return true;
+                    } catch (...) {}
                 }
                 break;
             }
         }
     }
 
-    // 优先级 3: 进程名匹配
-    if (!processName.empty()) {
+    // 优先级 3: 进程名匹配 (使用预编译缓存)
+    if (!processName.empty() && !procName.empty()) {
         std::wstring wideProcName = easy::core::WinUtils::utf8ToWstring(processName);
         switch (matchMode) {
             case MatchMode::Exact: {
-                // 不区分大小写比较
                 std::wstring lowerProc = procName;
                 std::wstring lowerTarget = wideProcName;
                 std::transform(lowerProc.begin(), lowerProc.end(), lowerProc.begin(), ::towlower);
@@ -89,26 +115,15 @@ bool ScopeRule::matches(HWND hwnd, const std::wstring& procName, const std::wstr
                 if (lowerProc == lowerTarget) return true;
                 break;
             }
-            case MatchMode::Wildcard: {
-                const std::wstring regexStr = wildcardToRegex(wideProcName);
-                try {
-                    std::wregex re(regexStr, std::regex_constants::icase);
-                    if (std::regex_match(procName, re)) return true;
-                } catch (const std::exception& error) {
-                    LOG_WARN("作用域进程名通配符规则无效: {}", error.what());
-                } catch (...) {
-                    LOG_WARN("作用域进程名通配符规则发生未知异常");
-                }
-                break;
-            }
+            case MatchMode::Wildcard:
             case MatchMode::Regex: {
-                try {
-                    std::wregex re(wideProcName, std::regex_constants::icase);
-                    if (std::regex_match(procName, re)) return true;
-                } catch (const std::exception& error) {
-                    LOG_WARN("作用域进程名正则规则无效: {}", error.what());
-                } catch (...) {
-                    LOG_WARN("作用域进程名正则规则发生未知异常");
+                if (!procRegexAttempted) {
+                    compileRegexes();
+                }
+                if (compiledProcRegex.has_value()) {
+                    try {
+                        if (std::regex_match(procName, *compiledProcRegex)) return true;
+                    } catch (...) {}
                 }
                 break;
             }
@@ -145,6 +160,7 @@ ScopeRule ScopeRule::fromJson(const nlohmann::json& j) {
     rule.matchMode = static_cast<MatchMode>(std::clamp(matchMode, 0, 2));
     rule.effect = static_cast<RuleEffect>(std::clamp(effect, 0, 2));
     rule.profileName = j.value("profileName", "");
+    rule.compileRegexes();
     return rule;
 }
 
@@ -168,26 +184,24 @@ std::optional<std::string> ScopeRuleEngine::evaluate(HWND hwnd) const {
         }
     }
 
-    auto info = getWindowInfo(hwnd);
-
     // 按优先级排序: 特殊系统目标 (桌面/任务栏) > 句柄规则 > 类名规则 > 进程规则
     std::optional<std::string> result = "";
     bool matchedHigherPriority = false;
 
-    // 特殊目标 1: 桌面背景
+    // 特殊目标 1: 桌面背景 (零跨进程开销)
     if (easy::core::WinUtils::isDesktopWindow(hwnd)) {
         result = "special_desktop";
         matchedHigherPriority = true;
     } else if (easy::core::WinUtils::isTaskbarWindow(hwnd)) {
-        // 特殊目标 2: 任务栏
+        // 特殊目标 2: 任务栏 (零跨进程开销)
         result = "special_taskbar";
         matchedHigherPriority = true;
     }
 
-    // 先检查句柄规则
+    // 先检查句柄规则 (仅需 hwnd)
     if (!matchedHigherPriority) {
         for (const auto& rule : m_rules) {
-            if (rule.windowHandle != nullptr && rule.matches(hwnd, info.processName, info.className)) {
+            if (rule.windowHandle != nullptr && rule.matches(hwnd, L"", className)) {
                 matchedHigherPriority = true;
                 if (rule.effect == RuleEffect::Disable) { result = std::nullopt; break; }
                 if (rule.effect == RuleEffect::UseProfile) { result = rule.profileName; break; }
@@ -196,11 +210,11 @@ std::optional<std::string> ScopeRuleEngine::evaluate(HWND hwnd) const {
         }
     }
 
-    // 再检查类名规则（如果句柄规则未匹配）
+    // 再检查类名规则 (仅需 className，不调用 OpenProcess)
     if (!matchedHigherPriority && result.has_value() && result.value().empty()) {
         for (const auto& rule : m_rules) {
             if (rule.windowHandle == nullptr && !rule.windowClass.empty()
-                && rule.matches(hwnd, info.processName, info.className)) {
+                && rule.matches(hwnd, L"", className)) {
                 matchedHigherPriority = true;
                 if (rule.effect == RuleEffect::Disable) { result = std::nullopt; break; }
                 if (rule.effect == RuleEffect::UseProfile) { result = rule.profileName; break; }
@@ -209,14 +223,25 @@ std::optional<std::string> ScopeRuleEngine::evaluate(HWND hwnd) const {
         }
     }
 
-    // 最后检查进程规则
+    // 最后检查进程规则：延迟按需解析进程名，无进程名规则时彻底杜绝 OpenProcess 开销
     if (!matchedHigherPriority && result.has_value() && result.value().empty()) {
+        bool hasProcessRule = false;
         for (const auto& rule : m_rules) {
-            if (rule.windowHandle == nullptr && rule.windowClass.empty() && !rule.processName.empty()
-                && rule.matches(hwnd, info.processName, info.className)) {
-                if (rule.effect == RuleEffect::Disable) { result = std::nullopt; break; }
-                if (rule.effect == RuleEffect::UseProfile) { result = rule.profileName; break; }
+            if (rule.enabled && rule.windowHandle == nullptr && rule.windowClass.empty() && !rule.processName.empty()) {
+                hasProcessRule = true;
                 break;
+            }
+        }
+
+        if (hasProcessRule) {
+            auto info = getWindowInfo(hwnd);
+            for (const auto& rule : m_rules) {
+                if (rule.windowHandle == nullptr && rule.windowClass.empty() && !rule.processName.empty()
+                    && rule.matches(hwnd, info.processName, info.className)) {
+                    if (rule.effect == RuleEffect::Disable) { result = std::nullopt; break; }
+                    if (rule.effect == RuleEffect::UseProfile) { result = rule.profileName; break; }
+                    break;
+                }
             }
         }
     }
@@ -235,6 +260,7 @@ std::optional<std::string> ScopeRuleEngine::evaluate(HWND hwnd) const {
 
 void ScopeRuleEngine::addRule(const ScopeRule& rule) {
     std::lock_guard lock(m_mutex);
+    rule.compileRegexes();
     m_rules.push_back(rule);
     invalidateCache();  // 规则变更时清除缓存
     LOG_DEBUG("添加作用域规则: id={}, name={}, process={}, class={}",
@@ -250,6 +276,7 @@ void ScopeRuleEngine::removeRule(const std::string& ruleId) {
 void ScopeRuleEngine::addRules(const std::vector<ScopeRule>& rules) {
     std::lock_guard lock(m_mutex);
     for (const auto& rule : rules) {
+        rule.compileRegexes();
         m_rules.push_back(rule);
     }
     invalidateCache();

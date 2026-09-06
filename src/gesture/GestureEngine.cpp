@@ -78,6 +78,10 @@ bool GestureEngine::start() {
         m_actionWorker = std::jthread(
             [this](std::stop_token token) { actionWorkerLoop(token); });
     }
+    if (!m_contextWorker.joinable()) {
+        m_contextWorker = std::jthread(
+            [this](std::stop_token token) { contextWorkerLoop(token); });
+    }
 
     // 安装鼠标钩子
     auto& hook = MouseHook::instance();
@@ -124,6 +128,11 @@ void GestureEngine::stop() {
         LOG_DEBUG("Gesture shutdown: waiting for action worker");
         easy::core::joinWorkerWhilePumpingSentMessages(m_actionWorker);
         LOG_DEBUG("Gesture shutdown: action worker stopped");
+    }
+    if (m_contextWorker.joinable()) {
+        m_contextWorker.request_stop();
+        m_contextCv.notify_all();
+        easy::core::joinWorkerWhilePumpingSentMessages(m_contextWorker);
     }
     {
         std::lock_guard lock(m_actionMutex);
@@ -419,58 +428,7 @@ bool GestureEngine::onMouseEvent(const MouseEvent& event) {
                               triggerButton(), event.position.x, event.position.y,
                               reinterpret_cast<uintptr_t>(hwnd));
 
-                    // 检查当前窗口是否在黑名单（仅触发时读取配置，避免移动时频繁消耗性能）
-                    auto exceptions = easy::core::ConfigManager::instance().get<nlohmann::json>(
-                        "/gesture/exceptions", nlohmann::json::array());
-                    bool disabled = false;
-                    std::string exeName;
-                    std::string className;
-
-                    // 全屏几何判定本身很轻；类名 / OpenProcess 完整性查询绝不进按下热路径。
-                    // 只有确实铺满显示器时才取类名，区分游戏独占全屏与 CEF/Electron/Qt。
-                    if (m_autoBypassFullscreen.load() && easy::core::WinUtils::isWindowFullscreen(hwnd)) {
-                        const std::wstring classWide = hwnd
-                            ? easy::core::WinUtils::getWindowClassName(hwnd) : std::wstring{};
-                        className = easy::core::WinUtils::wstringToUtf8(classWide);
-                        if (shouldAutoBypassFullscreenGestures(
-                                true, isProductivityToolkitClassName(classWide))) {
-                            LOG_INFO("前台窗口处于全屏独占，手势引擎自动放行: hwnd=0x{:X} class={}",
-                                     reinterpret_cast<uintptr_t>(hwnd), className);
-                            return false;
-                        }
-                        LOG_INFO("全屏但是生产力窗口，继续手势: hwnd=0x{:X} class={}",
-                                 reinterpret_cast<uintptr_t>(hwnd), className);
-                    }
-
-                    // 绝大多数用户没有例外规则。只有确实需要匹配时才跨进程查询
-                    // 可执行文件和窗口类，普通右键不再承担这项开销。
-                    if (exceptions.is_array() && !exceptions.empty()) {
-                        exeName = hwnd ? easy::core::WinUtils::getProcessNameFromWindow(hwnd) : "";
-                        className = hwnd
-                            ? easy::core::WinUtils::wstringToUtf8(
-                                  easy::core::WinUtils::getWindowClassName(hwnd))
-                            : "";
-                        const auto normalizedExe = easy::core::WinUtils::toLower(exeName);
-                        for (const auto& rule : exceptions) {
-                            if (!rule.is_object()) continue;
-                            const std::string ruleType = rule.value("type", "");
-                            const std::string ruleValue = rule.value("value", "");
-                            if (ruleType == "process" &&
-                                normalizedExe == easy::core::WinUtils::toLower(ruleValue)) {
-                                disabled = true;
-                                break;
-                            }
-                            if (ruleType == "class" && className == ruleValue) {
-                                disabled = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (disabled) {
-                        LOG_INFO("窗口在手势黑名单, 不拦截: process='{}', class='{}'", exeName, className);
-                        return false;  // 不拦截 → 右键照常工作
-                    }
-
+                    // 零延迟响应：不再在按下热路径进行同步全屏判定、黑名单查询和进程枚举，直接开始追踪
                     beginTracking(event);
                     return true;  // 拦截触发键按下, 进入手势追踪
                 }
@@ -505,6 +463,94 @@ bool GestureEngine::onMouseEvent(const MouseEvent& event) {
     }
 }
 
+GestureEngine::AsyncContextResult GestureEngine::resolveContextInternal(HWND initialFg, POINT startPt) {
+    AsyncContextResult res;
+    auto rootIfLive = [](HWND hwnd) -> HWND {
+        if (!hwnd || !IsWindow(hwnd)) return nullptr;
+        HWND root = GetAncestor(hwnd, GA_ROOT);
+        return root ? root : hwnd;
+    };
+    auto skipPassThrough = [](HWND hwnd) -> HWND {
+        if (!hwnd) return nullptr;
+        wchar_t cls[256] = {};
+        GetClassNameW(hwnd, cls, 256);
+        return isGesturePassThroughClassName(cls) ? nullptr : hwnd;
+    };
+
+    HWND fg = skipPassThrough(rootIfLive(initialFg ? initialFg : GetForegroundWindow()));
+    HWND under = skipPassThrough(rootIfLive(WindowFromPoint(startPt)));
+    if (under && !IsWindowVisible(under)) under = nullptr;
+    HWND target = under ? under : fg;
+    res.targetWindow = target;
+
+    // 1. 全屏独占放行检查
+    if (m_autoBypassFullscreen.load() && target && easy::core::WinUtils::isWindowFullscreen(target)) {
+        const std::wstring classWide = easy::core::WinUtils::getWindowClassName(target);
+        if (shouldAutoBypassFullscreenGestures(true, isProductivityToolkitClassName(classWide))) {
+            res.disabled = true;
+            return res;
+        }
+    }
+
+    // 2. 黑名单例外规则检查
+    auto exceptions = easy::core::ConfigManager::instance().get<nlohmann::json>(
+        "/gesture/exceptions", nlohmann::json::array());
+    if (exceptions.is_array() && !exceptions.empty() && target) {
+        std::string exeName = easy::core::WinUtils::getProcessNameFromWindow(target);
+        std::string className = easy::core::WinUtils::wstringToUtf8(
+            easy::core::WinUtils::getWindowClassName(target));
+        const auto normalizedExe = easy::core::WinUtils::toLower(exeName);
+        for (const auto& rule : exceptions) {
+            if (!rule.is_object()) continue;
+            const std::string ruleType = rule.value("type", "");
+            const std::string ruleValue = rule.value("value", "");
+            if (ruleType == "process" &&
+                normalizedExe == easy::core::WinUtils::toLower(ruleValue)) {
+                res.disabled = true;
+                return res;
+            }
+            if (ruleType == "class" && className == ruleValue) {
+                res.disabled = true;
+                return res;
+            }
+        }
+    }
+
+    // 3. 解析作用域 Profile
+    res.profile = resolveProfile(target);
+    return res;
+}
+
+void GestureEngine::contextWorkerLoop(std::stop_token stopToken) {
+    while (!stopToken.stop_requested()) {
+        ContextJob job;
+        {
+            std::unique_lock lock(m_contextMutex);
+            m_contextCv.wait(lock, [&]() {
+                return m_pendingContextJob.epoch > 0 || stopToken.stop_requested();
+            });
+            if (stopToken.stop_requested()) break;
+            job = m_pendingContextJob;
+            m_pendingContextJob.epoch = 0;
+        }
+
+        if (job.epoch != m_contextEpoch.load(std::memory_order_relaxed)) {
+            continue;
+        }
+
+        AsyncContextResult res = resolveContextInternal(job.initialFg, job.startPt);
+
+        {
+            std::lock_guard lock(m_contextResultMutex);
+            if (job.epoch == m_contextEpoch.load(std::memory_order_relaxed)) {
+                m_latestContextResult = res;
+                m_contextResolved.store(true, std::memory_order_release);
+                m_contextResultCv.notify_all();
+            }
+        }
+    }
+}
+
 void GestureEngine::beginTracking(const MouseEvent& event) {
     m_activeTriggerDown = event.type;
     m_activeTriggerUp = triggerUpFor(event.type);
@@ -518,43 +564,30 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     // 松手后的输入线程会把 overlay 沉底再穿透选窗。
     m_gestureStartPt = { event.position.x, event.position.y };
     m_gestureEndPt = m_gestureStartPt;
-    auto rootIfLive = [](HWND hwnd) -> HWND {
-        if (!hwnd || !IsWindow(hwnd)) return nullptr;
-        HWND root = GetAncestor(hwnd, GA_ROOT);
-        return root ? root : hwnd;
-    };
-    auto skipPassThrough = [](HWND hwnd) -> HWND {
-        if (!hwnd) return nullptr;
-        wchar_t cls[256] = {};
-        GetClassNameW(hwnd, cls, 256);
-        return isGesturePassThroughClassName(cls) ? nullptr : hwnd;
-    };
-    HWND fg = skipPassThrough(rootIfLive(GetForegroundWindow()));
-    m_previousForeground = fg;
-    // 钩子里禁止 EnumWindows。按下时覆盖层通常还没盖住起点，WindowFromPoint 即可。
-    HWND under = skipPassThrough(rootIfLive(WindowFromPoint(m_gestureStartPt)));
-    if (under && !IsWindowVisible(under)) under = nullptr;
-    m_gestureStartWindow = under ? under : fg;
-    if (m_gestureStartWindow) m_lastExternalWindow = m_gestureStartWindow;
-    if (m_gestureStartWindow) {
-        wchar_t startCls[256] = {};
-        GetClassNameW(m_gestureStartWindow, startCls, 256);
-        const LONG_PTR startEx = GetWindowLongPtrW(m_gestureStartWindow, GWL_EXSTYLE);
-        LOG_DEBUG("手势追踪开始: pos=({},{}) hwnd=0x{:X} class={} compositorSurface={}",
-                 event.position.x, event.position.y,
-                 reinterpret_cast<uintptr_t>(m_gestureStartWindow),
-                 easy::core::WinUtils::wstringToUtf8(std::wstring(startCls)),
-                 windowUsesCompositorSurface(startEx));
-    }
     m_gestureModifiers = event.modifiers;  // 记录手势开始时的修饰键状态
     m_gestureEdgeZone = event.edgeZone;    // 记录手势开始时的屏幕边缘区域
-    m_activeProfile = resolveProfile(m_gestureStartWindow); // 一次性预解析 Profile 缓存
+    m_activeProfile.reset();
     m_fallbackProfile = getProfile("default");
     m_lastRecognizedDirections.clear();
     m_lastLiveCode.clear();
     m_liveHeldLabel.clear();
     m_liveHadMatch = false;
     m_liveMatchTick = 0;
+    m_contextResolved.store(false, std::memory_order_release);
+
+    HWND initialFg = event.foregroundWindow;
+    POINT startPt = m_gestureStartPt;
+
+    // 异步解析窗口上下文 (Lazy Context Resolution)：
+    // 跨进程取进程名、完整性检查、全屏几何判定及 Profile 规则匹配全部在 worker 线程执行，
+    // 彻底释放输入线程，确保 0ms 首点极速响应！
+    const uint64_t epoch = m_contextEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    {
+        std::lock_guard lock(m_contextMutex);
+        m_pendingContextJob = {epoch, initialFg, startPt};
+    }
+    m_contextCv.notify_one();
+
     m_state = GestureState::Tracking;
 
     // 开始轨迹可视化
@@ -569,6 +602,23 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
 }
 
 void GestureEngine::updateTracking(const MouseEvent& event) {
+    // 检查异步上下文解析是否就绪
+    if (m_contextResolved.load(std::memory_order_acquire)) {
+        AsyncContextResult res;
+        {
+            std::lock_guard lock(m_contextResultMutex);
+            res = m_latestContextResult;
+        }
+        if (res.disabled) {
+            LOG_INFO("手势异步检测命中黑名单或全屏独占，取消手势并补发原按键");
+            cancelTracking();
+            reinjectTriggerClick();
+            return;
+        }
+        m_gestureStartWindow = res.targetWindow;
+        m_activeProfile = res.profile;
+    }
+
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_trackingStartTime).count();
 
@@ -667,6 +717,33 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
 
 void GestureEngine::endTracking(const MouseEvent& event) {
     MouseHook::instance().resetTriggerState();
+
+    // 等待异步上下文解析就绪 (最多等待 50ms)
+    if (!m_contextResolved.load(std::memory_order_acquire)) {
+        std::unique_lock lock(m_contextResultMutex);
+        m_contextResultCv.wait_for(lock, std::chrono::milliseconds(50), [&]() {
+            return m_contextResolved.load(std::memory_order_acquire);
+        });
+    }
+
+    if (m_contextResolved.load(std::memory_order_acquire)) {
+        AsyncContextResult res;
+        {
+            std::lock_guard lock(m_contextResultMutex);
+            res = m_latestContextResult;
+        }
+        if (res.disabled) {
+            LOG_INFO("手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击");
+            m_state = GestureState::Idle;
+            if (m_trailVisible.load()) GestureTrailOverlay::instance().hide();
+            reinjectTriggerClick();
+            return;
+        }
+        m_gestureStartWindow = res.targetWindow;
+        m_activeProfile = res.profile;
+    }
+
+    auto activeProfileSnapshot = m_activeProfile;
     m_activeProfile.reset();
     m_fallbackProfile.reset();
     m_lastRecognizedDirections.clear();
@@ -737,8 +814,8 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     LOG_INFO("手势识别成功: code={}, fullCode={}, arrows={}, 点数={}, 距离={:.0f}px",
              bareCode, fullCode, result->toArrowString(), result->rawPoints.size(), result->totalDistance);
 
-    // 查找适用的 Profile（成员窗口句柄已清空，必须用本次快照）
-    auto profile = resolveProfile(startWindow);
+    // 查找适用的 Profile（优先使用异步预解析快照，若未命中则降级同步解析）
+    auto profile = activeProfileSnapshot ? activeProfileSnapshot : resolveProfile(startWindow);
     if (!profile) {
         // 手势在当前窗口被禁用 → 还原为普通点击
         m_state = GestureState::Idle;
@@ -948,6 +1025,8 @@ void GestureEngine::cancelTracking() {
     m_liveMatchTick = 0;
     m_gestureStartWindow = nullptr;
     m_previousForeground = nullptr;
+    m_contextResolved.store(false, std::memory_order_release);
+    m_contextEpoch.fetch_add(1, std::memory_order_relaxed);
     if (m_trailVisible.load()) {
         GestureTrailOverlay::instance().hide();
     }
