@@ -2153,6 +2153,14 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 创建/更新托盘图标未成功，启动自愈定时器, error={}",
             "[{}] Tray icon create/update failed, starting self-healing timer, error={}"
         }},
+        {"创建/更新托盘图标未成功(第{}次尝试)，启动自愈定时器, error={}, hwnd=0x{:X}", {
+            "[{}] 创建/更新托盘图标未成功(第{}次尝试)，启动自愈定时器, error={}, hwnd=0x{:X}",
+            "[{}] Failed to create/update tray icon (attempt {}), starting self-healing timer, error={}, hwnd=0x{:X}"
+        }},
+        {"系统托盘图标自愈重试成功！(历经{}次重试)", {
+            "[{}] 系统托盘图标自愈重试成功！(历经{}次重试)",
+            "[{}] System tray icon self-healing retry succeeded! (after {} retries)"
+        }},
         {"系统托盘图标已成功创建并显示 (cbSize={})", {
             "[{}] 系统托盘图标已成功创建并显示 (cbSize={})",
             "[{}] System tray icon created and shown (cbSize={})"

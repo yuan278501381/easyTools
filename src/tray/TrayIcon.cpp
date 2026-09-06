@@ -89,6 +89,10 @@ bool TrayIcon::create(HWND hwnd, HICON icon) {
     if (!m_icon) {
         m_icon = loadThemeAppropriateIcon();
     }
+    // 终极安全保底：若因任何系统环境原因未获取到定制图标，使用系统标准应用图标
+    if (!m_icon) {
+        m_icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
     m_nid.hIcon = m_icon;
 
     wcsncpy_s(m_nid.szTip, isEnglishLocale() ? L"EasyTools - Desktop Utility" : L"EasyTools — 桌面效率工具", _TRUNCATE);
@@ -107,23 +111,30 @@ bool TrayIcon::create(HWND hwnd, HICON icon) {
         added = Shell_NotifyIconW(NIM_MODIFY, &m_nid);
     }
 
-    static bool s_lastFailed = false;
+    static int s_failCount = 0;
     if (!added) {
-        if (!s_lastFailed) {
-            LOG_WARN("创建/更新托盘图标未成功，启动自愈定时器, error={}", GetLastError());
-            s_lastFailed = true;
+        s_failCount++;
+        if (s_failCount <= 3 || s_failCount % 10 == 0) {
+            LOG_WARN("创建/更新托盘图标未成功(第{}次尝试)，启动自愈定时器, error={}, hwnd=0x{:X}",
+                     s_failCount, GetLastError(), reinterpret_cast<uintptr_t>(m_hwnd));
         }
         if (m_hwnd && IsWindow(m_hwnd)) {
             SetTimer(m_hwnd, TIMER_ID_TRAY_RETRY, 2000, nullptr);
         }
         return false;
     }
-    s_lastFailed = false;
+    if (s_failCount > 0) {
+        LOG_INFO("系统托盘图标自愈重试成功！(历经{}次重试)", s_failCount);
+        s_failCount = 0;
+    }
 
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, TIMER_ID_TRAY_RETRY);
     }
     m_created = true;
+    NOTIFYICONDATAW nidVer = m_nid;
+    nidVer.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nidVer);
     LOG_INFO("系统托盘图标已成功创建并显示 (cbSize={})", m_nid.cbSize);
     return true;
 }

@@ -95,6 +95,7 @@ public:
     void fireCallback(TrayMenuId id);
 
     static constexpr UINT TIMER_ID_TRAY_RETRY = 2001;
+    static constexpr UINT WM_TRAYICON = WM_USER + 100;
 
 private:
     TrayIcon() = default;
@@ -107,8 +108,6 @@ private:
     bool m_created = false;
     bool m_gesturePaused = false;
     std::unordered_map<TrayMenuId, TrayEventCallback> m_callbacks;
-
-    static constexpr UINT WM_TRAYICON = WM_USER + 100;
 };
 
 }  // namespace easy::tray

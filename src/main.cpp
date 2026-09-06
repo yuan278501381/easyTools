@@ -345,6 +345,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     }
 
     g_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    if (g_wmTaskbarCreated != 0) {
+        ChangeWindowMessageFilter(g_wmTaskbarCreated, MSGFLT_ADD);
+    }
+    ChangeWindowMessageFilter(easy::tray::TrayIcon::WM_TRAYICON, MSGFLT_ADD);
     const auto startupBeganAt = std::chrono::steady_clock::now();
 
     // ── 0b. 高分屏 (DPI) 感知 ─────────────────────────────────────────────
@@ -695,7 +699,7 @@ HWND createMessageWindow(HINSTANCE hInstance) {
     wcex.lpszClassName = WINDOW_CLASS_NAME;
     RegisterClassExW(&wcex);
 
-    return CreateWindowExW(
+    HWND hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         WINDOW_CLASS_NAME,
         WINDOW_TITLE,
@@ -703,6 +707,19 @@ HWND createMessageWindow(HINSTANCE hInstance) {
         0, 0, 0, 0,
         nullptr, nullptr, hInstance, nullptr
     );
+
+    if (hwnd) {
+        // UIPI (User Interface Privilege Isolation) 防御加固：
+        // 当 EasyTools 以管理员权限运行时，普通权限 Explorer 发送的托盘消息和任务栏重建广播默认会被内核阻断。
+        // 通过 ChangeWindowMessageFilterEx 显式向 Explorer 放行关键生命周期消息。
+        ChangeWindowMessageFilterEx(hwnd, easy::tray::TrayIcon::WM_TRAYICON, MSGFLT_ALLOW, nullptr);
+        if (g_wmTaskbarCreated != 0) {
+            ChangeWindowMessageFilterEx(hwnd, g_wmTaskbarCreated, MSGFLT_ALLOW, nullptr);
+        }
+        ChangeWindowMessageFilterEx(hwnd, WM_COMMAND, MSGFLT_ALLOW, nullptr);
+    }
+
+    return hwnd;
 }
 
 void initializeSubsystems(HWND hwnd, bool preloadSettings) {

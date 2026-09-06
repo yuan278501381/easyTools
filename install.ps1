@@ -181,16 +181,36 @@ try {
             $TargetExe = if ($Dir) { Join-Path $Dir "EasyTools.exe" } else { "C:\Program Files\EasyTools\EasyTools.exe" }
             if (Test-Path $TargetExe) {
                 Write-CliLog "正在启动应用: $TargetExe" "INFO"
-                $appInfo = New-Object System.Diagnostics.ProcessStartInfo
-                $appInfo.FileName = $TargetExe
-                $appInfo.Verb = "runas"
-                $appInfo.UseShellExecute = $true
+                $launched = $false
+                $currentUserName = $env:USERNAME
+                $taskName = "\EasyTools\Autorun for $currentUserName"
+
+                # 优先通道：通过用户交互式计划任务穿透拉起，确保 100% 注入当前用户的 winsta0\default 物理桌面
                 try {
-                    [System.Diagnostics.Process]::Start($appInfo) | Out-Null
+                    $null = schtasks /query /tn "$taskName" 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        $null = schtasks /run /tn "$taskName" 2>&1
+                        if ($LASTEXITCODE -eq 0) {
+                            $launched = $true
+                            Write-CliLog "已通过交互式计划任务 ($taskName) 穿透拉起应用至物理桌面！" "SUCCESS"
+                        }
+                    }
                 } catch {
-                    Start-Process -FilePath $TargetExe
+                    # 计划任务不可用时安全回退
                 }
-                Write-CliLog "EasyTools 已成功启动并就绪！" "SUCCESS"
+
+                if (-not $launched) {
+                    $appInfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $appInfo.FileName = $TargetExe
+                    $appInfo.Verb = "runas"
+                    $appInfo.UseShellExecute = $true
+                    try {
+                        [System.Diagnostics.Process]::Start($appInfo) | Out-Null
+                    } catch {
+                        Start-Process -FilePath $TargetExe
+                    }
+                    Write-CliLog "EasyTools 已启动并就绪！" "SUCCESS"
+                }
             }
         }
         Write-Host "=======================================================" -ForegroundColor Green
