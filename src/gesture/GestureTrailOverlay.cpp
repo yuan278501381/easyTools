@@ -31,24 +31,15 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <dwmapi.h>
+#include <timeapi.h>
+
+#pragma comment(lib, "winmm.lib")
 
 using namespace Microsoft::WRL;
 
 namespace easy::gesture {
 
 namespace {
-
-int snapDown(int value, int grid) {
-    if (grid <= 0) return value;
-    if (value >= 0) return (value / grid) * grid;
-    return -(((-value + grid - 1) / grid) * grid);
-}
-
-int snapUp(int value, int grid) {
-    if (grid <= 0) return value;
-    if (value >= 0) return ((value + grid - 1) / grid) * grid;
-    return -((-value / grid) * grid);
-}
 
 void ensurePremultipliedAlpha(void* bits, int width, int height, int pitch) noexcept {
     if (!bits || width <= 0 || height <= 0 || pitch < width * 4) return;
@@ -89,6 +80,7 @@ GestureTrailOverlay& GestureTrailOverlay::instance() {
 bool GestureTrailOverlay::initialize(HINSTANCE hInstance) {
     easy::core::TraceId::Scope scope;
     m_hInstance = hInstance;
+    timeBeginPeriod(1);
 
     HANDLE readyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!readyEvent) {
@@ -131,8 +123,6 @@ void GestureTrailOverlay::reloadThemeColors() {
 }
 
 void GestureTrailOverlay::applyThemeColorsLocked() {
-    if (!m_renderTarget) return;
-
     auto& cfg = easy::core::ConfigManager::instance();
     const std::string colorMode = cfg.get<std::string>("/gesture/trailColorMode", "auto");
     const std::string customHex = cfg.get<std::string>("/gesture/trailColor", "#3B82F6");
@@ -142,22 +132,9 @@ void GestureTrailOverlay::applyThemeColorsLocked() {
 
     const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
     const easy::core::AccentColorRGB themeRgb = easy::core::getAccentColorRGB(accent);
-    const easy::core::AccentColorRGB trailRgb =
-        resolveGestureTrailRgb(colorMode, customHex, themeRgb);
+    m_cachedTrailRgb = resolveGestureTrailRgb(colorMode, customHex, themeRgb);
 
-    // 主流光画笔（可自定义或跟随主题）
-    m_renderTarget->CreateSolidColorBrush(
-        D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 1.0f),
-        m_lineBrush.ReleaseAndGetAddressOf()
-    );
-
-    // 外部柔光霓虹画笔
-    m_renderTarget->CreateSolidColorBrush(
-        D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.40f),
-        m_glowBrush.ReleaseAndGetAddressOf()
-    );
-
-    // 检测是否为亮色主题
+    // 检测是否为亮色主题 (仅在配置变更或主题刷新时执行一次低频注册表读取，杜绝热路径重复查询)
     const std::string theme = cfg.get<std::string>("/general/theme", "system");
     bool systemAppsUseLight = false;
     if (theme == "system") {
@@ -173,7 +150,25 @@ void GestureTrailOverlay::applyThemeColorsLocked() {
             RegCloseKey(hKey);
         }
     }
-    const bool isLight = gestureTrailUsesLightPalette(theme, systemAppsUseLight);
+    m_isLightTheme = gestureTrailUsesLightPalette(theme, systemAppsUseLight);
+    m_isDarkTheme = !m_isLightTheme;
+
+    const bool isLight = m_isLightTheme;
+    const easy::core::AccentColorRGB& trailRgb = m_cachedTrailRgb;
+
+    if (!m_renderTarget) return;
+
+    // 主流光画笔（可自定义或跟随主题）
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 1.0f),
+        m_lineBrush.ReleaseAndGetAddressOf()
+    );
+
+    // 外部柔光霓虹画笔
+    m_renderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.40f),
+        m_glowBrush.ReleaseAndGetAddressOf()
+    );
 
     // 灰色画笔 (未匹配动作时使用)。亮色主题必须足够深，浅银灰叠在白壁纸上等于没有轨迹。
     if (isLight) {
@@ -259,6 +254,7 @@ void GestureTrailOverlay::shutdown() {
     }
     releaseD2DResources();
     m_visible.store(false);
+    timeEndPeriod(1);
     LOG_DEBUG("手势轨迹覆盖层已关闭");
 }
 
@@ -273,6 +269,11 @@ void GestureTrailOverlay::clearCanvasLocked() {
     }
     if (m_toastBits && m_toastHeight > 0 && m_toastPitch > 0) {
         std::memset(m_toastBits, 0, static_cast<size_t>(m_toastPitch * m_toastHeight));
+    }
+    if (m_compositorReady && m_dcompDevice) {
+        if (m_trailDcompVisual) m_trailDcompVisual->SetContent(nullptr);
+        if (m_toastDcompVisual) m_toastDcompVisual->SetContent(nullptr);
+        m_dcompDevice->Commit();
     }
     if (m_hwnd && m_memoryDC && m_width > 0 && m_height > 0) {
         HDC hdcScreen = GetDC(nullptr);
@@ -381,12 +382,12 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
         }
 
         if (m_dismissPrevious.exchange(false, std::memory_order_acq_rel)) {
-            {
-                std::lock_guard renderLock(m_renderMutex);
-                clearCanvasLocked();
-            }
             if (!m_wantVisible.load(std::memory_order_relaxed) &&
                 !m_fading.load(std::memory_order_relaxed)) {
+                {
+                    std::lock_guard renderLock(m_renderMutex);
+                    clearCanvasLocked();
+                }
                 if (m_hwnd) ShowWindow(m_hwnd, SW_HIDE);
                 hideToastWindow();
                 m_visible.store(false, std::memory_order_relaxed);
@@ -730,6 +731,10 @@ void GestureTrailOverlay::hideToastWindow() {
     if (m_toastHwnd && IsWindowVisible(m_toastHwnd)) {
         ShowWindow(m_toastHwnd, SW_HIDE);
     }
+    m_lastToastOriginX = -9999;
+    m_lastToastOriginY = -9999;
+    m_lastToastW = 0;
+    m_lastToastH = 0;
 }
 
 void GestureTrailOverlay::releaseToastSurfaceLocked() {
@@ -812,119 +817,86 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom,
         if (m_strokeSurfaceLive.load(std::memory_order_relaxed)) {
             if (overlaySurfaceContains(left, top, right, bottom,
                                        m_originX, m_originY, m_width, m_height) &&
-                m_trailDcompSurface) {
+                m_frontCtx.surface) {
                 return true;
             }
         } else if (overlaySurfaceContains(left, top, right, bottom,
                                           m_originX, m_originY, m_width, m_height) &&
                    overlayCanReuseSurface(neededW, neededH, m_width, m_height, 4) &&
-                   m_trailDcompSurface) {
+                   m_frontCtx.surface) {
             m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
             return true;
         }
 
-        // 1.2 扩容阶段：阶梯扩容 512px，增设 96px 滞后回差防抖
-        constexpr int kGrid = 512;
-        constexpr int kPad = 96;
-        constexpr int kMin = 512;
-        constexpr int kScreenMargin = 64;
-
-        int expLeft = snapDown(left - kPad, kGrid);
-        int expTop = snapDown(top - kPad, kGrid);
-        int expRight = snapUp(right + kPad, kGrid);
-        int expBottom = snapUp(bottom + kPad, kGrid);
-
-        expLeft = (std::max)(expLeft, m_virtualX - kScreenMargin);
-        expTop = (std::max)(expTop, m_virtualY - kScreenMargin);
-        expRight = (std::min)(expRight, m_virtualX + m_virtualW + kScreenMargin);
-        expBottom = (std::min)(expBottom, m_virtualY + m_virtualH + kScreenMargin);
-
-        auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
-                                      int boundBegin, int boundEnd) {
-            if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
-            end = (std::min)(boundEnd, begin + minExtent);
-            begin = (std::max)(boundBegin, end - minExtent);
-        };
-        ensureMinimumExtent(expLeft, expRight, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
-        ensureMinimumExtent(expTop, expBottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
-
-        if (m_strokeSurfaceLive.load(std::memory_order_relaxed) && m_width > 0 && m_height > 0) {
-            growOverlayRect(expLeft, expTop, expRight, expBottom,
-                            m_originX, m_originY, m_width, m_height);
-        }
+        // 1.2 扩容阶段：计算阶梯扩容与防抖包围盒 (1024px 充裕步进，128px 防抖回差，锁定空间原点防抽搐)
+        int expLeft = 0, expTop = 0, expRight = 0, expBottom = 0;
+        computeOverlaySurfaceBounds(
+            left, top, right, bottom,
+            m_originX, m_originY, m_width, m_height,
+            m_strokeSurfaceLive.load(std::memory_order_relaxed),
+            m_virtualX, m_virtualY, m_virtualW, m_virtualH,
+            expLeft, expTop, expRight, expBottom);
 
         const int targetW = (std::max)(1, expRight - expLeft);
         const int targetH = (std::max)(1, expBottom - expTop);
 
-        // 1.3 原子离屏双缓冲机制：
-        // 保持旧表面挂载在 Visual 上继续正常显示，在离屏新表面上完成全部绘制后原子切换并提交，
-        // 彻底根除窗口原点迁移与空白帧导致的闪烁和撕裂！
-        Microsoft::WRL::ComPtr<IDCompositionSurface> newSurface;
+        // 1.3 创建双表面：前台表面与后台离屏表面 (Ping-Pong Double Buffering 终极抗闪烁管线)
+        Microsoft::WRL::ComPtr<IDCompositionSurface> newFront;
+        Microsoft::WRL::ComPtr<IDCompositionSurface> newBack;
         HRESULT hr = m_dcompDevice->CreateSurface(
             static_cast<UINT>(targetW), static_cast<UINT>(targetH),
             DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
-            newSurface.GetAddressOf());
-        if (FAILED(hr) || !newSurface) {
-            LOG_WARN("创建 DirectComposition 轨迹表面失败: {}x{}, hr=0x{:X}", targetW, targetH, hr);
+            newFront.GetAddressOf());
+        if (FAILED(hr) || !newFront) {
+            LOG_WARN("创建 DirectComposition 前台轨迹表面失败: {}x{}, hr=0x{:X}", targetW, targetH, hr);
+            return false;
+        }
+        hr = m_dcompDevice->CreateSurface(
+            static_cast<UINT>(targetW), static_cast<UINT>(targetH),
+            DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
+            newBack.GetAddressOf());
+        if (FAILED(hr) || !newBack) {
+            LOG_WARN("创建 DirectComposition 后台轨迹表面失败: {}x{}, hr=0x{:X}", targetW, targetH, hr);
             return false;
         }
 
-        POINT offset{};
-        Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurf;
-        hr = newSurface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);
-        if (SUCCEEDED(hr) && dxgiSurf) {
-            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-                D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-            Microsoft::WRL::ComPtr<ID2D1RenderTarget> gpuRt;
-            if (SUCCEEDED(m_d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurf.Get(), rtProps, gpuRt.GetAddressOf())) && gpuRt) {
-                gpuRt->BeginDraw();
-                gpuRt->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
-                gpuRt->Clear(D2D1::ColorF(0, 0, 0, 0));
+        // 重置并装载新的双表面上下文
+        m_frontCtx.reset();
+        m_frontCtx.surface = newFront;
+        m_backCtx.reset();
+        m_backCtx.surface = newBack;
 
-                m_originX = expLeft;
-                m_originY = expTop;
-
-                drawTrailGeometry(gpuRt.Get(), points, isRecognized, m_fadeAlpha);
-                gpuRt->EndDraw();
-            }
-            newSurface->EndDraw();
-
-            // 原子挂载新表面至 Visual，并同步窗口几何位置与尺寸
-            m_trailDcompVisual->SetContent(newSurface.Get());
-            m_trailDcompW = targetW;
-            m_trailDcompH = targetH;
-            m_originX = expLeft;
-            m_originY = expTop;
-            m_width = targetW;
-            m_height = targetH;
-            m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
-
-            SetWindowPos(m_hwnd, nullptr, m_originX, m_originY, m_width, m_height,
-                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-            m_dcompDevice->Commit();
-
-            // 提交成功后安全析构释放旧表面
-            m_trailDcompSurface = newSurface;
-
-            if (!IsWindowVisible(m_hwnd)) {
-                ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
-            }
-            m_visible.store(true, std::memory_order_release);
-            alreadyRendered = true;
-            return true;
-        } else {
-            LOG_WARN("DirectComposition 离屏表面 BeginDraw 失败, hr=0x{:X}", hr);
+        // 在新前台表面上完成完整离屏预渲染
+        if (!renderTrailToSurfaceLocked(m_frontCtx, points, isRecognized, m_fadeAlpha, expLeft, expTop)) {
+            LOG_WARN("在新 DirectComposition 表面上预渲染失败");
             return false;
         }
+
+        // 原子挂载新表面至 Visual，并同步窗口几何位置与尺寸
+        m_trailDcompVisual->SetContent(m_frontCtx.surface.Get());
+        m_trailDcompW = targetW;
+        m_trailDcompH = targetH;
+        m_originX = expLeft;
+        m_originY = expTop;
+        m_width = targetW;
+        m_height = targetH;
+        m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
+
+        SetWindowPos(m_hwnd, nullptr, m_originX, m_originY, m_width, m_height,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+
+        m_trailDcompSurface = m_frontCtx.surface;
+        m_trailBackSurface = m_backCtx.surface;
+
+        if (!IsWindowVisible(m_hwnd)) {
+            ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+        }
+        m_visible.store(true, std::memory_order_release);
+        alreadyRendered = true;
+        return true;
     }
 
     // 2. GDI 降级管线
-    constexpr int kGrid = 512;
-    constexpr int kPad = 96;
-    constexpr int kMin = 512;
-    constexpr int kScreenMargin = 64;
-
     if (m_strokeSurfaceLive.load(std::memory_order_relaxed)) {
         if (overlaySurfaceContains(left, top, right, bottom,
                                    m_originX, m_originY, m_width, m_height) &&
@@ -932,29 +904,13 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom,
             return true;
         }
 
-        int expLeft = snapDown(left - kPad, kGrid);
-        int expTop = snapDown(top - kPad, kGrid);
-        int expRight = snapUp(right + kPad, kGrid);
-        int expBottom = snapUp(bottom + kPad, kGrid);
-
-        expLeft = (std::max)(expLeft, m_virtualX - kScreenMargin);
-        expTop = (std::max)(expTop, m_virtualY - kScreenMargin);
-        expRight = (std::min)(expRight, m_virtualX + m_virtualW + kScreenMargin);
-        expBottom = (std::min)(expBottom, m_virtualY + m_virtualH + kScreenMargin);
-
-        auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
-                                      int boundBegin, int boundEnd) {
-            if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
-            end = (std::min)(boundEnd, begin + minExtent);
-            begin = (std::max)(boundBegin, end - minExtent);
-        };
-        ensureMinimumExtent(expLeft, expRight, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
-        ensureMinimumExtent(expTop, expBottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
-
-        if (m_width > 0 && m_height > 0) {
-            growOverlayRect(expLeft, expTop, expRight, expBottom,
-                            m_originX, m_originY, m_width, m_height);
-        }
+        int expLeft = 0, expTop = 0, expRight = 0, expBottom = 0;
+        computeOverlaySurfaceBounds(
+            left, top, right, bottom,
+            m_originX, m_originY, m_width, m_height,
+            true,
+            m_virtualX, m_virtualY, m_virtualW, m_virtualH,
+            expLeft, expTop, expRight, expBottom);
 
         const bool ok = recreateBitmapLocked(
             expLeft, expTop, (std::max)(1, expRight - expLeft), (std::max)(1, expBottom - expTop));
@@ -970,24 +926,13 @@ bool GestureTrailOverlay::fitSurface(int left, int top, int right, int bottom,
         return true;
     }
 
-    int expLeft = snapDown(left - kPad, kGrid);
-    int expTop = snapDown(top - kPad, kGrid);
-    int expRight = snapUp(right + kPad, kGrid);
-    int expBottom = snapUp(bottom + kPad, kGrid);
-
-    expLeft = (std::max)(expLeft, m_virtualX - kScreenMargin);
-    expTop = (std::max)(expTop, m_virtualY - kScreenMargin);
-    expRight = (std::min)(expRight, m_virtualX + m_virtualW + kScreenMargin);
-    expBottom = (std::min)(expBottom, m_virtualY + m_virtualH + kScreenMargin);
-
-    auto ensureMinimumExtent = [](int& begin, int& end, int minExtent,
-                                  int boundBegin, int boundEnd) {
-        if (end - begin >= minExtent || boundEnd - boundBegin <= minExtent) return;
-        end = (std::min)(boundEnd, begin + minExtent);
-        begin = (std::max)(boundBegin, end - minExtent);
-    };
-    ensureMinimumExtent(expLeft, expRight, kMin, m_virtualX - kScreenMargin, m_virtualX + m_virtualW + kScreenMargin);
-    ensureMinimumExtent(expTop, expBottom, kMin, m_virtualY - kScreenMargin, m_virtualY + m_virtualH + kScreenMargin);
+    int expLeft = 0, expTop = 0, expRight = 0, expBottom = 0;
+    computeOverlaySurfaceBounds(
+        left, top, right, bottom,
+        m_originX, m_originY, m_width, m_height,
+        false,
+        m_virtualX, m_virtualY, m_virtualW, m_virtualH,
+        expLeft, expTop, expRight, expBottom);
 
     const bool ok = recreateBitmapLocked(expLeft, expTop, (std::max)(1, expRight - expLeft), (std::max)(1, expBottom - expTop));
     if (ok) m_strokeSurfaceLive.store(true, std::memory_order_relaxed);
@@ -1150,12 +1095,21 @@ bool GestureTrailOverlay::ensureCompositorLocked() {
 void GestureTrailOverlay::releaseCompositorSurfacesLocked() {
     if (m_trailDcompVisual) m_trailDcompVisual->SetContent(nullptr);
     if (m_toastDcompVisual) m_toastDcompVisual->SetContent(nullptr);
+    m_frontCtx.reset();
+    m_backCtx.reset();
+    m_toastFrontCtx.reset();
+    m_toastBackCtx.reset();
     m_trailDcompSurface.Reset();
+    m_trailBackSurface.Reset();
     m_toastDcompSurface.Reset();
     m_trailDcompW = 0;
     m_trailDcompH = 0;
     m_toastDcompW = 0;
     m_toastDcompH = 0;
+    m_lastToastOriginX = -9999;
+    m_lastToastOriginY = -9999;
+    m_lastToastW = 0;
+    m_lastToastH = 0;
 }
 
 void GestureTrailOverlay::releaseCompositorLocked() {
@@ -1323,6 +1277,10 @@ void GestureTrailOverlay::releaseD2DResources() {
 }
 
 void GestureTrailOverlay::releaseD2DResourcesLocked() {
+    m_frontCtx.reset();
+    m_backCtx.reset();
+    m_toastFrontCtx.reset();
+    m_toastBackCtx.reset();
     m_smoothPathGeometry.Reset();
     m_headCoreBrush.Reset();
     m_outlineBrush.Reset();
@@ -1365,35 +1323,25 @@ void GestureTrailOverlay::releaseD2DResourcesLocked() {
 // 渲染核心与硬件合成管线
 // ─────────────────────────────────────────────────────────────────────────────
 
-void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
-                                           const std::vector<TrailPoint>& points,
-                                           bool isRecognized,
-                                           float fadeAlpha) {
-    if (!rt || points.empty()) return;
+bool GestureTrailOverlay::renderTrailToSurfaceLocked(
+    GpuSurfaceContext& ctx,
+    const std::vector<TrailPoint>& points,
+    bool isRecognized,
+    float fadeAlpha,
+    int originX,
+    int originY) {
+    if (!ctx.surface || !m_dcompDevice || !m_d2dFactory) return false;
 
-    auto& cfg = easy::core::ConfigManager::instance();
-    const std::string colorMode = cfg.get<std::string>("/gesture/trailColorMode", "auto");
-    const std::string customHex = cfg.get<std::string>("/gesture/trailColor", "#3B82F6");
-    const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-    const easy::core::AccentColorRGB themeRgb = easy::core::getAccentColorRGB(accent);
-    const easy::core::AccentColorRGB trailRgb = resolveGestureTrailRgb(colorMode, customHex, themeRgb);
-
-    const std::string theme = cfg.get<std::string>("/general/theme", "system");
-    bool systemAppsUseLight = false;
-    if (theme == "system") {
-        HKEY hKey;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-            0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            DWORD value = 1;
-            DWORD size = sizeof(value);
-            if (RegQueryValueExW(hKey, L"AppsUseLightTheme", nullptr, nullptr, (LPBYTE)&value, &size) == ERROR_SUCCESS) {
-                systemAppsUseLight = (value != 0);
-            }
-            RegCloseKey(hKey);
-        }
+    POINT offset{};
+    Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurf;
+    HRESULT hr = ctx.surface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);
+    if (FAILED(hr) || !dxgiSurf) {
+        LOG_WARN("DirectComposition 表面 BeginDraw 失败: hr=0x{:X}", hr);
+        return false;
     }
-    const bool isLight = gestureTrailUsesLightPalette(theme, systemAppsUseLight);
+
+    const easy::core::AccentColorRGB& trailRgb = m_cachedTrailRgb;
+    const bool isLight = m_isLightTheme;
 
     D2D1_COLOR_F lineColor = D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.96f * fadeAlpha);
     D2D1_COLOR_F glowColor = D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.28f * fadeAlpha);
@@ -1406,19 +1354,258 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
             glowColor = D2D1::ColorF(0.40f, 0.45f, 0.55f, 0.28f * fadeAlpha);
         }
     }
+    const D2D1_COLOR_F outlineColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f * fadeAlpha);
+    const D2D1_COLOR_F headCoreColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, fadeAlpha);
 
-    ComPtr<ID2D1SolidColorBrush> lineBrush;
-    ComPtr<ID2D1SolidColorBrush> glowBrush;
-    ComPtr<ID2D1SolidColorBrush> outlineBrush;
-    ComPtr<ID2D1SolidColorBrush> headCoreBrush;
+    // 显存 RenderTarget 与 SolidColorBrush 复用与缓存 (避免每帧 CreateDxgiSurfaceRenderTarget 与 4 次画刷分配)
+    if (!ctx.renderTarget || ctx.dxgiSurface.Get() != dxgiSurf.Get()) {
+        ctx.dxgiSurface = dxgiSurf;
+        ctx.renderTarget.Reset();
+        ctx.lineBrush.Reset();
+        ctx.glowBrush.Reset();
+        ctx.outlineBrush.Reset();
+        ctx.headCoreBrush.Reset();
 
-    rt->CreateSolidColorBrush(lineColor, lineBrush.GetAddressOf());
-    rt->CreateSolidColorBrush(glowColor, glowBrush.GetAddressOf());
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f * fadeAlpha), outlineBrush.GetAddressOf());
-    rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, fadeAlpha), headCoreBrush.GetAddressOf());
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        hr = m_d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurf.Get(), rtProps, ctx.renderTarget.GetAddressOf());
+        if (FAILED(hr) || !ctx.renderTarget) {
+            ctx.surface->EndDraw();
+            return false;
+        }
+
+        ctx.renderTarget->CreateSolidColorBrush(lineColor, ctx.lineBrush.GetAddressOf());
+        ctx.renderTarget->CreateSolidColorBrush(glowColor, ctx.glowBrush.GetAddressOf());
+        ctx.renderTarget->CreateSolidColorBrush(outlineColor, ctx.outlineBrush.GetAddressOf());
+        ctx.renderTarget->CreateSolidColorBrush(headCoreColor, ctx.headCoreBrush.GetAddressOf());
+    } else {
+        // 极速快路径：仅更新颜色值 (SetColor 仅更新 GPU 常量缓冲，0 次显存重分配与系统调用)
+        if (ctx.lineBrush) ctx.lineBrush->SetColor(lineColor);
+        if (ctx.glowBrush) ctx.glowBrush->SetColor(glowColor);
+        if (ctx.outlineBrush) ctx.outlineBrush->SetColor(outlineColor);
+        if (ctx.headCoreBrush) ctx.headCoreBrush->SetColor(headCoreColor);
+    }
+
+    ctx.renderTarget->BeginDraw();
+    ctx.renderTarget->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
+    ctx.renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+    drawTrailGeometryDirect(
+        ctx.renderTarget.Get(),
+        ctx.lineBrush.Get(),
+        ctx.glowBrush.Get(),
+        ctx.outlineBrush.Get(),
+        ctx.headCoreBrush.Get(),
+        points,
+        isRecognized,
+        fadeAlpha,
+        originX,
+        originY);
+
+    hr = ctx.renderTarget->EndDraw();
+    ctx.surface->EndDraw();
+
+    if (FAILED(hr)) {
+        ctx.renderTarget.Reset();
+        return false;
+    }
+    return true;
+}
+
+bool GestureTrailOverlay::renderToastToSurfaceLocked(
+    GpuSurfaceContext& ctx,
+    const std::string& resultText,
+    bool isRecognized,
+    bool excessive,
+    int toastW,
+    int toastH,
+    float toastScale,
+    float fadeAlpha) {
+    if (!ctx.surface || !m_dcompDevice || !m_d2dFactory) return false;
+
+    POINT offset{};
+    Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurf;
+    HRESULT hr = ctx.surface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);
+    if (FAILED(hr) || !dxgiSurf) {
+        LOG_WARN("DirectComposition 表面 BeginDraw 失败: hr=0x{:X}", hr);
+        return false;
+    }
+
+    if (!ctx.renderTarget || ctx.dxgiSurface.Get() != dxgiSurf.Get()) {
+        ctx.dxgiSurface = dxgiSurf;
+        ctx.renderTarget.Reset();
+        ctx.bgBrush.Reset();
+        ctx.borderBrush.Reset();
+        ctx.textBrush.Reset();
+        ctx.excDotBrush.Reset();
+
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        hr = m_d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurf.Get(), rtProps, ctx.renderTarget.GetAddressOf());
+        if (FAILED(hr) || !ctx.renderTarget) {
+            ctx.surface->EndDraw();
+            return false;
+        }
+    }
+
+    ctx.renderTarget->BeginDraw();
+    ctx.renderTarget->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
+    ctx.renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
+
+    drawToastContentDirect(
+        ctx.renderTarget.Get(),
+        ctx,
+        resultText,
+        isRecognized,
+        excessive,
+        toastW,
+        toastH,
+        toastScale,
+        fadeAlpha);
+
+    hr = ctx.renderTarget->EndDraw();
+    ctx.surface->EndDraw();
+
+    if (FAILED(hr)) {
+        ctx.renderTarget.Reset();
+        return false;
+    }
+    return true;
+}
+
+void GestureTrailOverlay::drawToastContentDirect(
+    ID2D1RenderTarget* rt,
+    GpuSurfaceContext& ctx,
+    const std::string& resultText,
+    bool isRecognized,
+    bool excessive,
+    int toastW,
+    int toastH,
+    float toastScale,
+    float fadeAlpha) {
+    if (!rt) return;
+
+    const easy::core::AccentColorRGB& trailRgb = m_cachedTrailRgb;
+    const bool isLight = m_isLightTheme;
+
+    const float resultScale = toastScale;
+    const bool hasTextFormat = updateTextFormat(resultScale);
+    const float centerX = static_cast<float>(toastW) * 0.5f;
+    const float centerY = static_cast<float>(toastH) * 0.5f;
+
+    if (excessive) {
+        D2D1_COLOR_F bgColor = isLight
+            ? D2D1::ColorF(0.92f, 0.18f, 0.24f, 0.94f * fadeAlpha)
+            : D2D1::ColorF(0.52f, 0.08f, 0.12f, 0.92f * fadeAlpha);
+        D2D1_COLOR_F borderColor = isLight
+            ? D2D1::ColorF(0.78f, 0.10f, 0.16f, 0.85f * fadeAlpha)
+            : D2D1::ColorF(0.96f, 0.28f, 0.36f, 0.85f * fadeAlpha);
+        D2D1_COLOR_F dotColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, fadeAlpha);
+
+        if (!ctx.bgBrush) rt->CreateSolidColorBrush(bgColor, ctx.bgBrush.GetAddressOf());
+        else ctx.bgBrush->SetColor(bgColor);
+
+        if (!ctx.borderBrush) rt->CreateSolidColorBrush(borderColor, ctx.borderBrush.GetAddressOf());
+        else ctx.borderBrush->SetColor(borderColor);
+
+        if (!ctx.excDotBrush) rt->CreateSolidColorBrush(dotColor, ctx.excDotBrush.GetAddressOf());
+        else ctx.excDotBrush->SetColor(dotColor);
+
+        float boxW = 126.0f * resultScale;
+        float boxH = 58.0f * resultScale;
+        D2D1_ROUNDED_RECT rrect = D2D1::RoundedRect(
+            D2D1::RectF(centerX - boxW / 2.0f, centerY - boxH / 2.0f,
+                        centerX + boxW / 2.0f, centerY + boxH / 2.0f),
+            16.0f * resultScale, 16.0f * resultScale);
+        if (ctx.bgBrush) rt->FillRoundedRectangle(&rrect, ctx.bgBrush.Get());
+        if (ctx.borderBrush) rt->DrawRoundedRectangle(&rrect, ctx.borderBrush.Get(), 2.6f * resultScale);
+        if (ctx.excDotBrush) {
+            const float dotRadius = 6.0f * resultScale;
+            const float dotSpacing = 22.0f * resultScale;
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX - dotSpacing, centerY), dotRadius, dotRadius), ctx.excDotBrush.Get());
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX, centerY), dotRadius, dotRadius), ctx.excDotBrush.Get());
+            rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX + dotSpacing, centerY), dotRadius, dotRadius), ctx.excDotBrush.Get());
+        }
+    } else {
+        const std::wstring wText = hasTextFormat
+            ? easy::core::WinUtils::utf8ToWstring(resultText) : std::wstring{};
+        if (hasTextFormat && !wText.empty() && m_dwriteFactory) {
+            ComPtr<IDWriteTextLayout> layout;
+            m_dwriteFactory->CreateTextLayout(
+                wText.c_str(), static_cast<UINT32>(wText.length()),
+                m_textFormat.Get(),
+                10000.0f, 1000.0f,
+                layout.GetAddressOf());
+
+            float boxW = 140.0f * resultScale;
+            float boxH = 58.0f * resultScale;
+            if (layout) {
+                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                DWRITE_TEXT_METRICS metrics{};
+                if (SUCCEEDED(layout->GetMetrics(&metrics))) {
+                    float paddingX = 38.0f * resultScale;
+                    float paddingY = 16.0f * resultScale;
+                    boxW = (std::max)(metrics.width + paddingX * 2.0f, 136.0f * resultScale);
+                    boxH = (std::max)(metrics.height + paddingY * 2.0f, 58.0f * resultScale);
+                }
+            }
+
+            D2D1_ROUNDED_RECT rrect = D2D1::RoundedRect(
+                D2D1::RectF(centerX - boxW / 2.0f, centerY - boxH / 2.0f,
+                            centerX + boxW / 2.0f, centerY + boxH / 2.0f),
+                16.0f * resultScale, 16.0f * resultScale);
+
+            const bool isFading = m_fading.load(std::memory_order_relaxed);
+            const bool isSuccess = (isRecognized || m_isRecognized.load(std::memory_order_relaxed));
+
+            D2D1_COLOR_F bgColor = (isFading && isSuccess)
+                ? D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.95f * fadeAlpha)
+                : D2D1::ColorF(0.12f, 0.14f, 0.18f, 0.82f * fadeAlpha);
+            D2D1_COLOR_F borderColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f * fadeAlpha);
+            D2D1_COLOR_F textColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, fadeAlpha);
+
+            if (!ctx.bgBrush) rt->CreateSolidColorBrush(bgColor, ctx.bgBrush.GetAddressOf());
+            else ctx.bgBrush->SetColor(bgColor);
+
+            if (!ctx.borderBrush) rt->CreateSolidColorBrush(borderColor, ctx.borderBrush.GetAddressOf());
+            else ctx.borderBrush->SetColor(borderColor);
+
+            if (!ctx.textBrush) rt->CreateSolidColorBrush(textColor, ctx.textBrush.GetAddressOf());
+            else ctx.textBrush->SetColor(textColor);
+
+            if (ctx.bgBrush) rt->FillRoundedRectangle(&rrect, ctx.bgBrush.Get());
+            if (ctx.borderBrush) rt->DrawRoundedRectangle(&rrect, ctx.borderBrush.Get(), 2.6f * resultScale);
+            if (ctx.textBrush && m_textFormat) {
+                rt->DrawText(
+                    wText.c_str(),
+                    static_cast<UINT32>(wText.size()),
+                    m_textFormat.Get(),
+                    D2D1::RectF(centerX - boxW / 2.0f, centerY - boxH / 2.0f,
+                                centerX + boxW / 2.0f, centerY + boxH / 2.0f),
+                    ctx.textBrush.Get());
+            }
+        }
+    }
+}
+
+void GestureTrailOverlay::drawTrailGeometryDirect(
+    ID2D1RenderTarget* rt,
+    ID2D1SolidColorBrush* lineBrush,
+    ID2D1SolidColorBrush* glowBrush,
+    ID2D1SolidColorBrush* outlineBrush,
+    ID2D1SolidColorBrush* headCoreBrush,
+    const std::vector<TrailPoint>& points,
+    bool isRecognized,
+    float fadeAlpha,
+    int originX,
+    int originY) {
+    if (!rt || points.empty()) return;
 
     auto getPt = [&](size_t idx) -> D2D1_POINT_2F {
-        return D2D1::Point2F(points[idx].x - m_originX, points[idx].y - m_originY);
+        return D2D1::Point2F(points[idx].x - originX, points[idx].y - originY);
     };
 
     ensureStrokeStyleLocked();
@@ -1450,17 +1637,17 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
                     const float outlineW = clampTrailOutlineWidth(m_style.outlineWidth) * m_dpiScale;
                     const float whiteW = trailOutlineWidenWidth(coreW, outlineW);
                     if (whiteW > 0.0f && outlineBrush) {
-                        rt->DrawGeometry(linePath.Get(), outlineBrush.Get(), whiteW, m_strokeStyle.Get());
+                        rt->DrawGeometry(linePath.Get(), outlineBrush, whiteW, m_strokeStyle.Get());
                         if (glowBrush) {
                             glowBrush->SetOpacity(0.22f * fadeAlpha);
-                            rt->DrawGeometry(linePath.Get(), glowBrush.Get(), coreW * 1.35f, m_strokeStyle.Get());
+                            rt->DrawGeometry(linePath.Get(), glowBrush, coreW * 1.35f, m_strokeStyle.Get());
                         }
                     } else if (glowBrush) {
                         glowBrush->SetOpacity(0.28f * fadeAlpha);
-                        rt->DrawGeometry(linePath.Get(), glowBrush.Get(), coreW * 2.4f, m_strokeStyle.Get());
+                        rt->DrawGeometry(linePath.Get(), glowBrush, coreW * 2.4f, m_strokeStyle.Get());
                     }
                     if (lineBrush) {
-                        rt->DrawGeometry(linePath.Get(), lineBrush.Get(), coreW, m_strokeStyle.Get());
+                        rt->DrawGeometry(linePath.Get(), lineBrush, coreW, m_strokeStyle.Get());
                     }
                 }
             }
@@ -1473,29 +1660,29 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
             glowBrush->SetOpacity(0.25f * fadeAlpha);
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(0), startR * 2.2f, startR * 2.2f),
-                glowBrush.Get());
+                glowBrush);
         }
         if (outlineBrush && outlineW > 0.0f) {
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(0), startR + outlineW, startR + outlineW),
-                outlineBrush.Get());
+                outlineBrush);
         }
         if (lineBrush) {
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(0), startR, startR),
-                lineBrush.Get());
+                lineBrush);
         }
 
         // 终点头部能量晶体 (End Head Crystal)
         ID2D1SolidColorBrush* activeHead = (isRecognized || points.size() < 4)
-            ? headCoreBrush.Get()
-            : lineBrush.Get();
+            ? headCoreBrush
+            : lineBrush;
         if (activeHead) {
             const float headR = (std::max)(m_style.lineWidth * m_dpiScale * 0.55f, 3.0f);
             if (outlineBrush && outlineW > 0.0f) {
                 rt->FillEllipse(
                     D2D1::Ellipse(getPt(points.size() - 1), headR + outlineW, headR + outlineW),
-                    outlineBrush.Get());
+                    outlineBrush);
             }
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(points.size() - 1), headR, headR), activeHead);
@@ -1508,19 +1695,83 @@ void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
             glowBrush->SetOpacity(0.28f * fadeAlpha);
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(0), startR * 2.2f, startR * 2.2f),
-                glowBrush.Get());
+                glowBrush);
         }
         if (outlineBrush && outlineW > 0.0f) {
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(0), startR + outlineW, startR + outlineW),
-                outlineBrush.Get());
+                outlineBrush);
         }
         if (lineBrush) {
             rt->FillEllipse(
                 D2D1::Ellipse(getPt(0), startR, startR),
-                lineBrush.Get());
+                lineBrush);
         }
     }
+}
+
+void GestureTrailOverlay::drawTrailGeometry(ID2D1RenderTarget* rt,
+                                           const std::vector<TrailPoint>& points,
+                                           bool isRecognized,
+                                           float fadeAlpha) {
+    if (!rt || points.empty()) return;
+
+    const easy::core::AccentColorRGB& trailRgb = m_cachedTrailRgb;
+    const bool isLight = m_isLightTheme;
+
+    D2D1_COLOR_F lineColor = D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.96f * fadeAlpha);
+    D2D1_COLOR_F glowColor = D2D1::ColorF(trailRgb.r, trailRgb.g, trailRgb.b, 0.28f * fadeAlpha);
+    if (!isRecognized && points.size() >= 4) {
+        if (isLight) {
+            lineColor = D2D1::ColorF(0.28f, 0.31f, 0.38f, 0.96f * fadeAlpha);
+            glowColor = D2D1::ColorF(0.40f, 0.44f, 0.52f, 0.28f * fadeAlpha);
+        } else {
+            lineColor = D2D1::ColorF(0.60f, 0.65f, 0.75f, 0.85f * fadeAlpha);
+            glowColor = D2D1::ColorF(0.40f, 0.45f, 0.55f, 0.28f * fadeAlpha);
+        }
+    }
+    const D2D1_COLOR_F outlineColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f * fadeAlpha);
+    const D2D1_COLOR_F headCoreColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, fadeAlpha);
+
+    if (rt == m_renderTarget.Get() && m_lineBrush && m_glowBrush && m_outlineBrush && m_headCoreBrush) {
+        m_lineBrush->SetColor(lineColor);
+        m_glowBrush->SetColor(glowColor);
+        m_outlineBrush->SetColor(outlineColor);
+        m_headCoreBrush->SetColor(headCoreColor);
+        drawTrailGeometryDirect(
+            rt,
+            m_lineBrush.Get(),
+            m_glowBrush.Get(),
+            m_outlineBrush.Get(),
+            m_headCoreBrush.Get(),
+            points,
+            isRecognized,
+            fadeAlpha,
+            m_originX,
+            m_originY);
+        return;
+    }
+
+    ComPtr<ID2D1SolidColorBrush> lineBrush;
+    ComPtr<ID2D1SolidColorBrush> glowBrush;
+    ComPtr<ID2D1SolidColorBrush> outlineBrush;
+    ComPtr<ID2D1SolidColorBrush> headCoreBrush;
+    rt->CreateSolidColorBrush(lineColor, lineBrush.GetAddressOf());
+    rt->CreateSolidColorBrush(glowColor, glowBrush.GetAddressOf());
+    rt->CreateSolidColorBrush(outlineColor, outlineBrush.GetAddressOf());
+    rt->CreateSolidColorBrush(headCoreColor, headCoreBrush.GetAddressOf());
+
+    drawTrailGeometryDirect(
+        rt,
+        lineBrush.Get(),
+        glowBrush.Get(),
+        outlineBrush.Get(),
+        headCoreBrush.Get(),
+        points,
+        isRecognized,
+        fadeAlpha,
+        m_originX,
+        m_originY);
 }
 
 void GestureTrailOverlay::drawToastContent(ID2D1RenderTarget* rt,
@@ -1532,29 +1783,8 @@ void GestureTrailOverlay::drawToastContent(ID2D1RenderTarget* rt,
                                            float fadeAlpha) {
     if (!rt) return;
 
-    auto& cfg = easy::core::ConfigManager::instance();
-    const std::string colorMode = cfg.get<std::string>("/gesture/trailColorMode", "auto");
-    const std::string customHex = cfg.get<std::string>("/gesture/trailColor", "#3B82F6");
-    const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
-    const easy::core::AccentColorRGB themeRgb = easy::core::getAccentColorRGB(accent);
-    const easy::core::AccentColorRGB trailRgb = resolveGestureTrailRgb(colorMode, customHex, themeRgb);
-
-    const std::string theme = cfg.get<std::string>("/general/theme", "system");
-    bool systemAppsUseLight = false;
-    if (theme == "system") {
-        HKEY hKey;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-            0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-            DWORD value = 1;
-            DWORD size = sizeof(value);
-            if (RegQueryValueExW(hKey, L"AppsUseLightTheme", nullptr, nullptr, (LPBYTE)&value, &size) == ERROR_SUCCESS) {
-                systemAppsUseLight = (value != 0);
-            }
-            RegCloseKey(hKey);
-        }
-    }
-    const bool isLight = gestureTrailUsesLightPalette(theme, systemAppsUseLight);
+    const easy::core::AccentColorRGB& trailRgb = m_cachedTrailRgb;
+    const bool isLight = m_isLightTheme;
 
     const float resultScale = toastScale;
     const bool hasTextFormat = updateTextFormat(resultScale);
@@ -1655,16 +1885,8 @@ bool GestureTrailOverlay::render() {
         m_fadeAlpha = 1.0f;
     }
 
-    // 消费无锁 SPSC 环形队列中由输入线程推入的新轨迹点
-    TrailPoint drainedPt;
-    while (m_pointQueue.pop(drainedPt)) {
-        if (!m_points.empty()) {
-            float dx = drainedPt.x - m_points.back().x;
-            float dy = drainedPt.y - m_points.back().y;
-            constexpr float minimumDelta = 1.0f;
-            if (dx * dx + dy * dy < minimumDelta * minimumDelta) continue;
-        }
-        m_points.push_back(drainedPt);
+    if (m_themeDirty.exchange(false, std::memory_order_acq_rel)) {
+        applyThemeColorsLocked();
     }
 
     std::vector<TrailPoint> points;
@@ -1672,6 +1894,18 @@ bool GestureTrailOverlay::render() {
     const bool isRecognized = m_isRecognized.load(std::memory_order_relaxed);
     {
         std::lock_guard trailLock(m_trailMutex);
+        // 消费无锁 SPSC 环形队列中由输入线程推入的新轨迹点 (必须在持有 m_trailMutex 保护下修改 m_points，彻底杜绝数据竞态)
+        TrailPoint drainedPt;
+        while (m_pointQueue.pop(drainedPt)) {
+            if (!m_points.empty()) {
+                float dx = drainedPt.x - m_points.back().x;
+                float dy = drainedPt.y - m_points.back().y;
+                constexpr float minimumDelta = 1.0f;
+                if (dx * dx + dy * dy < minimumDelta * minimumDelta) continue;
+            }
+            m_points.push_back(drainedPt);
+        }
+
         if (m_points.empty()) return false;
         points = m_points;
         resultText = m_resultText;
@@ -1698,43 +1932,44 @@ bool GestureTrailOverlay::render() {
     bool alreadyRendered = false;
     if (!fitSurface(left, top, right, bottom, points, isRecognized, alreadyRendered)) return false;
 
-    {
-        std::lock_guard trailLock(m_trailMutex);
-        if (m_points.empty()) return false;
-        points = m_points;
-        resultText = m_resultText;
-    }
-
     bool renderedOk = false;
+    bool dcompUsed = false;
 
     if (alreadyRendered) {
         renderedOk = true;
-    } else if (m_compositorReady && m_trailDcompSurface && m_dcompDevice) {
-        POINT offset{};
-        ComPtr<IDXGISurface> dxgiSurf;
-        HRESULT hr = m_trailDcompSurface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);
-        if (SUCCEEDED(hr) && dxgiSurf) {
-            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-                D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-            ComPtr<ID2D1RenderTarget> gpuRt;
-            if (SUCCEEDED(m_d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurf.Get(), rtProps, gpuRt.GetAddressOf())) && gpuRt) {
-                gpuRt->BeginDraw();
-                gpuRt->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
-                gpuRt->Clear(D2D1::ColorF(0, 0, 0, 0));
-                drawTrailGeometry(gpuRt.Get(), points, isRecognized, m_fadeAlpha);
-                gpuRt->EndDraw();
+        dcompUsed = true;
+    } else if (m_compositorReady && m_frontCtx.surface && m_dcompDevice) {
+        // 确保后台翻转表面就绪且尺寸严格匹配
+        if (!m_backCtx.surface) {
+            HRESULT hr = m_dcompDevice->CreateSurface(
+                static_cast<UINT>(m_trailDcompW), static_cast<UINT>(m_trailDcompH),
+                DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
+                m_backCtx.surface.GetAddressOf());
+            if (FAILED(hr) || !m_backCtx.surface) {
+                LOG_WARN("创建 DirectComposition 后台翻转表面失败: hr=0x{:X}", hr);
             }
-            m_trailDcompSurface->EndDraw();
-            m_dcompDevice->Commit();
+        }
 
-            if (!IsWindowVisible(m_hwnd)) {
-                ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+        if (m_backCtx.surface) {
+            // 在离屏后台表面上完成完整渲染，DWM 当前正读取显示前台表面，物理上 100% 杜绝 DWM 采样到全透明清屏半帧！
+            if (renderTrailToSurfaceLocked(m_backCtx, points, isRecognized, m_fadeAlpha, m_originX, m_originY)) {
+                // 原子翻转呈现：将 Visual 内容原子切换为刚绘制完成的后台表面
+                m_trailDcompVisual->SetContent(m_backCtx.surface.Get());
+
+                // 交换前后台表面指针与上下文：后台表面成为屏幕前台，旧前台成为下一帧的离屏后台
+                std::swap(m_frontCtx, m_backCtx);
+                m_trailDcompSurface = m_frontCtx.surface;
+                m_trailBackSurface = m_backCtx.surface;
+
+                if (!IsWindowVisible(m_hwnd)) {
+                    ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+                }
+                m_visible.store(true, std::memory_order_release);
+                renderedOk = true;
+                dcompUsed = true;
+            } else {
+                LOG_WARN("手势轨迹后台表面渲染失败");
             }
-            m_visible.store(true, std::memory_order_release);
-            renderedOk = true;
-        } else {
-            releaseCompositorLocked();
         }
     }
 
@@ -1778,6 +2013,13 @@ bool GestureTrailOverlay::render() {
         hideToastWindow();
     }
 
+    if (m_compositorReady && m_dcompDevice && (dcompUsed || (shouldShowToast && m_toastFrontCtx.surface))) {
+        HRESULT hrCommit = m_dcompDevice->Commit();
+        if (SUCCEEDED(hrCommit)) {
+            m_dcompDevice->WaitForCommitCompletion();
+        }
+    }
+
     const uint64_t epoch = m_trailEpoch.load(std::memory_order_relaxed);
     if (m_loggedPresentEpoch != epoch) {
         m_loggedPresentEpoch = epoch;
@@ -1797,42 +2039,43 @@ bool GestureTrailOverlay::presentToastLocked(const std::string& resultText, bool
     m_toastOriginY = toastCenterY - toastH / 2;
 
     if (m_compositorReady && m_toastDcompVisual && m_dcompDevice) {
-        if (!m_toastDcompSurface || m_toastDcompW != toastW || m_toastDcompH != toastH) {
-            m_toastDcompSurface.Reset();
-            HRESULT hr = m_dcompDevice->CreateSurface(
+        if (!m_toastFrontCtx.surface || !m_toastBackCtx.surface ||
+            m_toastDcompW != toastW || m_toastDcompH != toastH) {
+            m_toastFrontCtx.reset();
+            m_toastBackCtx.reset();
+            HRESULT hr1 = m_dcompDevice->CreateSurface(
                 static_cast<UINT>(toastW), static_cast<UINT>(toastH),
                 DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
-                m_toastDcompSurface.GetAddressOf());
-            if (SUCCEEDED(hr) && m_toastDcompSurface) {
-                m_toastDcompVisual->SetContent(m_toastDcompSurface.Get());
-                m_toastDcompW = toastW;
-                m_toastDcompH = toastH;
-            } else {
+                m_toastFrontCtx.surface.GetAddressOf());
+            HRESULT hr2 = m_dcompDevice->CreateSurface(
+                static_cast<UINT>(toastW), static_cast<UINT>(toastH),
+                DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
+                m_toastBackCtx.surface.GetAddressOf());
+            if (FAILED(hr1) || FAILED(hr2) || !m_toastFrontCtx.surface || !m_toastBackCtx.surface) {
+                LOG_WARN("创建 DirectComposition Toast 双表面失败: hr1=0x{:X}, hr2=0x{:X}", hr1, hr2);
                 return false;
             }
+            m_toastDcompW = toastW;
+            m_toastDcompH = toastH;
         }
 
-        POINT offset{};
-        ComPtr<IDXGISurface> dxgiSurf;
-        HRESULT hr = m_toastDcompSurface->BeginDraw(nullptr, IID_PPV_ARGS(dxgiSurf.GetAddressOf()), &offset);
-        if (SUCCEEDED(hr) && dxgiSurf) {
-            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
-                D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-            ComPtr<ID2D1RenderTarget> gpuRt;
-            if (SUCCEEDED(m_d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurf.Get(), rtProps, gpuRt.GetAddressOf())) && gpuRt) {
-                gpuRt->BeginDraw();
-                gpuRt->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
-                gpuRt->Clear(D2D1::ColorF(0, 0, 0, 0));
-                drawToastContent(gpuRt.Get(), resultText, recognized, excessive, toastW, toastH, toastScale, m_fadeAlpha);
-                gpuRt->EndDraw();
-            }
-            m_toastDcompSurface->EndDraw();
-            m_dcompDevice->Commit();
+        if (renderToastToSurfaceLocked(m_toastBackCtx, resultText, recognized, excessive, toastW, toastH, toastScale, m_fadeAlpha)) {
+            m_toastDcompVisual->SetContent(m_toastBackCtx.surface.Get());
+            std::swap(m_toastFrontCtx, m_toastBackCtx);
+            m_toastDcompSurface = m_toastFrontCtx.surface;
 
-            const bool yielded = m_zOrderYielded.load(std::memory_order_acquire);
-            SetWindowPos(m_toastHwnd, yielded ? HWND_BOTTOM : HWND_TOPMOST, m_toastOriginX, m_toastOriginY, toastW, toastH,
-                         SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            if (m_lastToastOriginX != m_toastOriginX || m_lastToastOriginY != m_toastOriginY ||
+                m_lastToastW != toastW || m_lastToastH != toastH) {
+                m_lastToastOriginX = m_toastOriginX;
+                m_lastToastOriginY = m_toastOriginY;
+                m_lastToastW = toastW;
+                m_lastToastH = toastH;
+                const bool yielded = m_zOrderYielded.load(std::memory_order_acquire);
+                SetWindowPos(m_toastHwnd, yielded ? HWND_BOTTOM : HWND_TOPMOST,
+                             m_toastOriginX, m_toastOriginY, toastW, toastH,
+                             SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
+
             if (!IsWindowVisible(m_toastHwnd)) {
                 ShowWindow(m_toastHwnd, SW_SHOWNOACTIVATE);
             }

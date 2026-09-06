@@ -2669,6 +2669,34 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 手势触发掩码已同步: 0x{:08X}",
             "[{}] Gesture trigger mask synchronized: 0x{:08X}"
         }},
+        {"创建 DirectComposition 前台轨迹表面失败: {}x{}, hr=0x{:X}", {
+            "[{}] 创建 DirectComposition 前台轨迹表面失败: {}x{}, hr=0x{:X}",
+            "[{}] Failed to create DirectComposition front trail surface: {}x{}, hr=0x{:X}"
+        }},
+        {"创建 DirectComposition 后台轨迹表面失败: {}x{}, hr=0x{:X}", {
+            "[{}] 创建 DirectComposition 后台轨迹表面失败: {}x{}, hr=0x{:X}",
+            "[{}] Failed to create DirectComposition back trail surface: {}x{}, hr=0x{:X}"
+        }},
+        {"在新 DirectComposition 表面上预渲染失败", {
+            "[{}] 在新 DirectComposition 表面上预渲染失败",
+            "[{}] Failed to prerender on new DirectComposition surface"
+        }},
+        {"DirectComposition 表面 BeginDraw 失败: hr=0x{:X}", {
+            "[{}] DirectComposition 表面 BeginDraw 失败: hr=0x{:X}",
+            "[{}] DirectComposition surface BeginDraw failed: hr=0x{:X}"
+        }},
+        {"创建 DirectComposition 后台翻转表面失败: hr=0x{:X}", {
+            "[{}] 创建 DirectComposition 后台翻转表面失败: hr=0x{:X}",
+            "[{}] Failed to create DirectComposition back flip surface: hr=0x{:X}"
+        }},
+        {"手势轨迹后台表面渲染失败", {
+            "[{}] 手势轨迹后台表面渲染失败",
+            "[{}] Failed to render gesture trail to back surface"
+        }},
+        {"创建 DirectComposition Toast 双表面失败: hr1=0x{:X}, hr2=0x{:X}", {
+            "[{}] 创建 DirectComposition Toast 双表面失败: hr1=0x{:X}, hr2=0x{:X}",
+            "[{}] Failed to create DirectComposition toast double surface: hr1=0x{:X}, hr2=0x{:X}"
+        }},
     };
     return catalog;
 }

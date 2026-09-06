@@ -13,6 +13,7 @@
 #define EASYTOOLS_GESTURE_TRAILOVERLAY_H
 
 #include "core/utils/SpscRingBuffer.h"
+#include "core/utils/ThemeUtils.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -138,7 +139,65 @@ private:
     void releaseToastSurfaceLocked();
     bool ensureToastTargetLocked();
 
+    struct GpuSurfaceContext {
+        Microsoft::WRL::ComPtr<IDCompositionSurface> surface;
+        Microsoft::WRL::ComPtr<IDXGISurface> dxgiSurface;
+        Microsoft::WRL::ComPtr<ID2D1RenderTarget> renderTarget;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> lineBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> glowBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> outlineBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> headCoreBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> bgBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> excDotBrush;
+
+        void reset() {
+            excDotBrush.Reset();
+            textBrush.Reset();
+            borderBrush.Reset();
+            bgBrush.Reset();
+            headCoreBrush.Reset();
+            outlineBrush.Reset();
+            glowBrush.Reset();
+            lineBrush.Reset();
+            renderTarget.Reset();
+            dxgiSurface.Reset();
+            surface.Reset();
+        }
+    };
+
+    bool renderTrailToSurfaceLocked(
+        GpuSurfaceContext& ctx,
+        const std::vector<TrailPoint>& points,
+        bool isRecognized,
+        float fadeAlpha,
+        int originX,
+        int originY);
+
+    bool renderToastToSurfaceLocked(
+        GpuSurfaceContext& ctx,
+        const std::string& resultText,
+        bool isRecognized,
+        bool excessive,
+        int toastW,
+        int toastH,
+        float toastScale,
+        float fadeAlpha);
+
     /// 统一图元渲染核心 (供 DComp 与 GDI 降级管线复用)
+    void drawTrailGeometryDirect(
+        ID2D1RenderTarget* rt,
+        ID2D1SolidColorBrush* lineBrush,
+        ID2D1SolidColorBrush* glowBrush,
+        ID2D1SolidColorBrush* outlineBrush,
+        ID2D1SolidColorBrush* headCoreBrush,
+        const std::vector<TrailPoint>& points,
+        bool isRecognized,
+        float fadeAlpha,
+        int originX,
+        int originY);
+
     void drawTrailGeometry(ID2D1RenderTarget* rt,
                            const std::vector<TrailPoint>& points,
                            bool isRecognized,
@@ -150,6 +209,16 @@ private:
                           int toastW, int toastH,
                           float toastScale,
                           float fadeAlpha);
+    void drawToastContentDirect(
+        ID2D1RenderTarget* rt,
+        GpuSurfaceContext& ctx,
+        const std::string& resultText,
+        bool isRecognized,
+        bool excessive,
+        int toastW,
+        int toastH,
+        float toastScale,
+        float fadeAlpha);
 
     /// 根据当前配置重建 D2D 画笔。调用方必须已持有 m_renderMutex，且渲染目标有效。
     void applyThemeColorsLocked();
@@ -242,20 +311,33 @@ private:
     Microsoft::WRL::ComPtr<IDCompositionDevice> m_dcompDevice;
     Microsoft::WRL::ComPtr<IDCompositionTarget> m_trailDcompTarget;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_trailDcompVisual;
+    GpuSurfaceContext m_frontCtx;
+    GpuSurfaceContext m_backCtx;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailDcompSurface;
+    Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailBackSurface;
     int m_trailDcompW = 0;
     int m_trailDcompH = 0;
     Microsoft::WRL::ComPtr<IDCompositionTarget> m_toastDcompTarget;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_toastDcompVisual;
+    GpuSurfaceContext m_toastFrontCtx;
+    GpuSurfaceContext m_toastBackCtx;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_toastDcompSurface;
     int m_toastDcompW = 0;
     int m_toastDcompH = 0;
     int m_toastOriginX = 0;
     int m_toastOriginY = 0;
+    int m_lastToastOriginX = -9999;
+    int m_lastToastOriginY = -9999;
+    int m_lastToastW = 0;
+    int m_lastToastH = 0;
     int m_toastWidth = 0;
     int m_toastHeight = 0;
     float m_dpiScale = 1.0f;
     float m_textScale = 0.0f;
+
+    bool m_isLightTheme = false;
+    bool m_isDarkTheme = true;
+    easy::core::AccentColorRGB m_cachedTrailRgb{ 0.231f, 0.510f, 0.965f };
     
     std::atomic<bool> m_isRecognized{false};
 

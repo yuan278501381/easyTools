@@ -626,6 +626,55 @@ TEST(GestureInputPolicyTest, OverlayRejectsOversizedLeftoverSurface) {
     EXPECT_FALSE(overlayCanReuseSurface(256, 256, 256, 256, 0));
 }
 
+TEST(GestureInputPolicyTest, SnapDownAndUpMath) {
+    EXPECT_EQ(snapDown(0, 1024), 0);
+    EXPECT_EQ(snapDown(500, 1024), 0);
+    EXPECT_EQ(snapDown(1024, 1024), 1024);
+    EXPECT_EQ(snapDown(1025, 1024), 1024);
+    EXPECT_EQ(snapDown(-1, 1024), -1024);
+    EXPECT_EQ(snapDown(-1024, 1024), -1024);
+    EXPECT_EQ(snapDown(-1025, 1024), -2048);
+    EXPECT_EQ(snapDown(100, 0), 100);
+
+    EXPECT_EQ(snapUp(0, 1024), 0);
+    EXPECT_EQ(snapUp(1, 1024), 1024);
+    EXPECT_EQ(snapUp(1024, 1024), 1024);
+    EXPECT_EQ(snapUp(1025, 1024), 2048);
+    EXPECT_EQ(snapUp(-1, 1024), 0);
+    EXPECT_EQ(snapUp(-1024, 1024), -1024);
+    EXPECT_EQ(snapUp(-1025, 1024), -1024);
+    EXPECT_EQ(snapUp(100, 0), 100);
+}
+
+TEST(GestureInputPolicyTest, ComputeOverlaySurfaceBoundsInitialAndExpansion) {
+    // 初始手势 (光标在 500, 500)，屏幕范围 [0, 0, 1920, 1080]
+    int outL = 0, outT = 0, outR = 0, outB = 0;
+    computeOverlaySurfaceBounds(468, 468, 532, 532, 0, 0, 0, 0, false,
+                               0, 0, 1920, 1080, outL, outT, outR, outB);
+    EXPECT_EQ(outL, 0);
+    EXPECT_EQ(outT, 0);
+    EXPECT_GE(outR - outL, 1024);
+    EXPECT_GE(outB - outT, 1024);
+
+    // 向右下方划动到 1200, 900，处于活态 (isLive = true)，原点锚定锁定 (origin 不变，仅尺寸扩大)
+    int expL = 0, expT = 0, expR = 0, expB = 0;
+    computeOverlaySurfaceBounds(468, 468, 1232, 932, outL, outT, outR - outL, outB - outT, true,
+                               0, 0, 1920, 1080, expL, expT, expR, expB);
+    EXPECT_EQ(expL, outL);
+    EXPECT_EQ(expT, outT);
+    EXPECT_GE(expR, 1232);
+    EXPECT_GE(expB, 932);
+
+    // 多显示器负坐标场景测试 [-1920, 0, 3840, 1080]
+    int negL = 0, negT = 0, negR = 0, negB = 0;
+    computeOverlaySurfaceBounds(-500, 200, -450, 250, 0, 0, 0, 0, false,
+                               -1920, 0, 3840, 1080, negL, negT, negR, negB);
+    EXPECT_LE(negL, -500);
+    EXPECT_GE(negR, -450);
+    EXPECT_GE(negR - negL, 1024);
+    EXPECT_GE(negB - negT, 1024);
+}
+
 TEST(GestureInputPolicyTest, FadeClockWaitsForRequiredToast) {
     EXPECT_FALSE(gestureFrameReadyToFade(false, false, false));
     EXPECT_TRUE(gestureFrameReadyToFade(true, false, false));
@@ -1694,4 +1743,44 @@ TEST(DirectCompositionPipelineTest, SurfaceLifecycleAndStateTransitions) {
     // 超过总时长 210ms（80ms + 120ms）：淡出彻底完成，Alpha 归零
     EXPECT_TRUE(easy::gesture::gestureFadeShouldFinish(true, 210, holdMs, fadeMs));
     EXPECT_NEAR(easy::gesture::gestureFadeAlpha(true, 210, holdMs, fadeMs), 0.0f, 0.001f);
+}
+
+TEST(DirectCompositionPipelineTest, PingPongDoubleBufferingInvariants) {
+    // 1. 验证手势初始帧 1024x1024 视口以手势起点为中心居中锚定
+    int left = 680, top = 580, right = 720, bottom = 620;
+    int outL = 0, outT = 0, outR = 0, outB = 0;
+    easy::gesture::computeOverlaySurfaceBounds(left, top, right, bottom, 0, 0, 0, 0, false,
+                                               0, 0, 1920, 1080, outL, outT, outR, outB);
+    EXPECT_LE(outL, left);
+    EXPECT_LE(outT, top);
+    EXPECT_GE(outR, right);
+    EXPECT_GE(outB, bottom);
+    EXPECT_GE(outR - outL, 1024);
+    EXPECT_GE(outB - outT, 1024);
+    // 居中预留充裕缓冲区：起点距离左侧与上侧边缘均 >= 400px，绝大部分日常短手势生命周期内 0 次扩容 0 次原点搬移
+    EXPECT_GE(left - outL, 400);
+    EXPECT_GE(top - outT, 400);
+
+    // 2. 验证典型手势划动过程中处于该表面完全覆盖内，overlaySurfaceContains 为真
+    EXPECT_TRUE(easy::gesture::overlaySurfaceContains(left, top, right, bottom,
+                                                      outL, outT, outR - outL, outB - outT));
+    EXPECT_TRUE(easy::gesture::overlaySurfaceContains(left + 200, top + 150, right + 200, bottom + 150,
+                                                      outL, outT, outR - outL, outB - outT));
+
+    // 3. 验证活态越界扩容时，原点 (outL, outT) 严格锁定锚定，仅外缘扩张，彻底阻断窗口原点搬移导致的视觉抽搐
+    int expL = 0, expT = 0, expR = 0, expB = 0;
+    easy::gesture::computeOverlaySurfaceBounds(left, top, outR + 200, outB + 150,
+                                               outL, outT, outR - outL, outB - outT, true,
+                                               0, 0, 3840, 2160, expL, expT, expR, expB);
+    EXPECT_EQ(expL, outL);
+    EXPECT_EQ(expT, outT);
+    EXPECT_GE(expR, outR + 200);
+    EXPECT_GE(expB, outB + 150);
+
+    // 4. 验证屏幕边缘防溢出夹取 (boundBottom = virtualH + 64)
+    int clampedL = 0, clampedT = 0, clampedR = 0, clampedB = 0;
+    easy::gesture::computeOverlaySurfaceBounds(left, top, outR + 200, outB + 150,
+                                               outL, outT, outR - outL, outB - outT, true,
+                                               0, 0, 1920, 1080, clampedL, clampedT, clampedR, clampedB);
+    EXPECT_EQ(clampedB, 1080 + 64);
 }

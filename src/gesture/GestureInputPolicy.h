@@ -132,6 +132,103 @@ inline void growOverlayRect(int& left, int& top, int& right, int& bottom,
     bottom = (std::max)(bottom, originY + height);
 }
 
+inline int snapDown(int value, int grid) noexcept {
+    if (grid <= 0) return value;
+    if (value >= 0) return (value / grid) * grid;
+    return -(((-value + grid - 1) / grid) * grid);
+}
+
+inline int snapUp(int value, int grid) noexcept {
+    if (grid <= 0) return value;
+    if (value >= 0) return ((value + grid - 1) / grid) * grid;
+    return -((-value / grid) * grid);
+}
+
+/// 阶梯扩容与包围盒步进计算 (1024px 充裕步进，128px 防抖回差，锁定空间原点防抽搐)
+inline void computeOverlaySurfaceBounds(
+    int left, int top, int right, int bottom,
+    int originX, int originY, int currentW, int currentH,
+    bool isLive,
+    int virtualX, int virtualY, int virtualW, int virtualH,
+    int& outLeft, int& outTop, int& outRight, int& outBottom) noexcept {
+    constexpr int kPad = 128;
+    constexpr int kMin = 1024;
+    constexpr int kScreenMargin = 64;
+
+    const int boundLeft = virtualX - kScreenMargin;
+    const int boundTop = virtualY - kScreenMargin;
+    const int boundRight = virtualX + virtualW + kScreenMargin;
+    const int boundBottom = virtualY + virtualH + kScreenMargin;
+
+    if (!isLive || currentW <= 0 || currentH <= 0) {
+        // 初始手势帧：以起始点为中心预分配 1024x1024 充裕包围盒，向各方向提供 >= 500px 缓冲空间
+        const int centerX = (left + right) / 2;
+        const int centerY = (top + bottom) / 2;
+        int expLeft = centerX - kMin / 2;
+        int expTop = centerY - kMin / 2;
+        int expRight = expLeft + kMin;
+        int expBottom = expTop + kMin;
+
+        // 若起点靠近虚拟屏边缘，平滑平移以完整容纳 1024x1024 视口
+        if (expLeft < boundLeft) {
+            expRight = (std::min)(boundRight, expRight + (boundLeft - expLeft));
+            expLeft = boundLeft;
+        }
+        if (expRight > boundRight) {
+            expLeft = (std::max)(boundLeft, expLeft - (expRight - boundRight));
+            expRight = boundRight;
+        }
+        if (expTop < boundTop) {
+            expBottom = (std::min)(boundBottom, expBottom + (boundTop - expTop));
+            expTop = boundTop;
+        }
+        if (expBottom > boundBottom) {
+            expTop = (std::max)(boundTop, expTop - (expBottom - boundBottom));
+            expBottom = boundBottom;
+        }
+
+        // 与 snapDown 对齐保证边界整齐
+        if (virtualX >= 0 && expLeft < virtualX) expLeft = virtualX;
+        if (virtualY >= 0 && expTop < virtualY) expTop = virtualY;
+        if (expRight - expLeft < kMin) expRight = (std::min)(boundRight, expLeft + kMin);
+        if (expBottom - expTop < kMin) expBottom = (std::min)(boundBottom, expTop + kMin);
+
+        outLeft = expLeft;
+        outTop = expTop;
+        outRight = expRight;
+        outBottom = expBottom;
+        return;
+    }
+
+    // 活态划动中 (isLive = true)：死锁已确立的原点 (originX, originY)，绝不轻易平移窗口原点引起抽搐
+    int expLeft = originX;
+    int expTop = originY;
+    int expRight = originX + currentW;
+    int expBottom = originY + currentH;
+
+    if (left - kPad < expLeft) {
+        expLeft = snapDown(left - kPad, 512);
+        expLeft = (std::max)(expLeft, boundLeft);
+    }
+    if (top - kPad < expTop) {
+        expTop = snapDown(top - kPad, 512);
+        expTop = (std::max)(expTop, boundTop);
+    }
+    if (right + kPad > expRight) {
+        expRight = snapUp(right + kPad, 512);
+        expRight = (std::min)(expRight, boundRight);
+    }
+    if (bottom + kPad > expBottom) {
+        expBottom = snapUp(bottom + kPad, 512);
+        expBottom = (std::min)(expBottom, boundBottom);
+    }
+
+    outLeft = expLeft;
+    outTop = expTop;
+    outRight = expRight;
+    outBottom = expBottom;
+}
+
 inline bool overlaySurfaceContains(int left, int top, int right, int bottom,
                                    int originX, int originY, int width, int height) noexcept {
     return width > 0 && height > 0 &&

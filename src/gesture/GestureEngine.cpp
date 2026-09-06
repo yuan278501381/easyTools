@@ -18,6 +18,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <timeapi.h>
+
+#pragma comment(lib, "winmm.lib")
 
 namespace easy::gesture {
 
@@ -73,6 +76,7 @@ GestureEngine::GestureEngine() {
 
 bool GestureEngine::start() {
     easy::core::TraceId::Scope scope;
+    timeBeginPeriod(1);
 
     if (!m_actionWorker.joinable()) {
         m_actionWorker = std::jthread(
@@ -145,6 +149,7 @@ void GestureEngine::stop() {
         std::lock_guard lock(m_integrityWarnMutex);
         m_warnedIntegrityPids.clear();
     }
+    timeEndPeriod(1);
     LOG_INFO("手势引擎已停止");
 }
 
