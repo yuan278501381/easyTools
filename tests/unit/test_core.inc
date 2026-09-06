@@ -966,6 +966,27 @@ TEST(TrayIconTest, ProductionClassStateMachineAndCallbacks) {
     tray.handleMessage(0, WM_LBUTTONUP);
     EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
 
+    // 5.4 现代 NOTIFYICON_VERSION_4 规范: WM_CONTEXTMENU 携带物理坐标呼出托盘悬浮窗
+    tray.handleMessage(MAKEWPARAM(500, 500), WM_CONTEXTMENU);
+    EXPECT_TRUE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.5 现代规范 NIN_SELECT: 单击平滑收起托盘悬浮窗
+    tray.handleMessage(0, NIN_SELECT);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.6 现代 NOTIFYICON_VERSION_4 规范: 键盘无坐标呼出 (-1, -1) 自适应弹出
+    tray.handleMessage(MAKEWPARAM(-1, -1), WM_CONTEXTMENU);
+    EXPECT_TRUE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.7 再次触发右键菜单应平滑收起 (Toggle 功能)
+    tray.handleMessage(MAKEWPARAM(500, 500), WM_CONTEXTMENU);
+    EXPECT_FALSE(easy::ui::TrayWindow::instance().isVisible());
+
+    // 5.8 现代规范 NIN_KEYSELECT: 键盘选中直接唤起主设置
+    settingsOpened.store(false);
+    tray.handleMessage(0, NIN_KEYSELECT);
+    EXPECT_TRUE(settingsOpened.load());
+
     // 6. 生命周期销毁与复位测试
     tray.destroy();
     EXPECT_FALSE(tray.isCreated());

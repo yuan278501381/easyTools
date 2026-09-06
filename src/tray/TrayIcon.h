@@ -18,6 +18,13 @@
 #include <functional>
 #include <unordered_map>
 
+#ifndef NIN_SELECT
+#define NIN_SELECT (WM_USER + 0)
+#endif
+#ifndef NIN_KEYSELECT
+#define NIN_KEYSELECT (NIN_SELECT | 1)
+#endif
+
 namespace easy::tray {
 
 /// 托盘菜单项 ID
@@ -89,8 +96,8 @@ public:
     void onRestartElevated(TrayEventCallback callback) { m_callbacks[TrayMenuId::RestartElevated] = std::move(callback); }
     void onExit(TrayEventCallback callback)          { m_callbacks[TrayMenuId::Exit]         = std::move(callback); }
 
-    /// 显示右键菜单
-    void showContextMenu();
+    /// 显示右键菜单（支持传入指定坐标，默认 -1 自适应获取光标或托盘位置）
+    void showContextMenu(int x = -1, int y = -1);
 
     /// 显示 Windows 原生右键菜单 (零延迟/高可靠兜底)
     void showNativeContextMenu(POINT pt);

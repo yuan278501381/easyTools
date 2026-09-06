@@ -213,6 +213,15 @@ inline bool shouldBypassGestureForNativeSearchMenu(std::wstring_view cls,
     return shiftPressed && cls == L"EasyTools_SearchWindow";
 }
 
+/// 识别 Windows 任务栏与系统托盘窗口（包括主任务栏、多显示器副任务栏、托盘通知区与 Win10/Win11 托盘溢出浮窗）
+inline bool isSystemTrayOrTaskbar(std::wstring_view cls) noexcept {
+    return cls == L"Shell_TrayWnd" ||
+           cls == L"Shell_SecondaryTrayWnd" ||
+           cls == L"TrayNotifyWnd" ||
+           cls == L"NotifyIconOverflowWindow" ||
+           cls == L"TopLevelWindowForOverflowXamlIsland";
+}
+
 /// 从覆盖层往下找真实窗口时，不可见、覆盖层、几何上不含该点的候选都跳过。
 inline bool gestureHitTestShouldSkipCandidate(bool visible, bool overlayClass,
                                               bool containsPoint) noexcept {

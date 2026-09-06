@@ -151,12 +151,31 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                 if (GetAsyncKeyState(VK_MENU)    & 0x8000) mods |= MOUSE_MOD_ALT;
                 if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) mods |= MOUSE_MOD_SHIFT;
 
-                HWND hitWindow = WindowFromPoint(data.pt);
+                HWND rawHit = WindowFromPoint(data.pt);
+                HWND hitWindow = rawHit;
                 if (hitWindow) {
                     if (const HWND root = GetAncestor(hitWindow, GA_ROOT)) hitWindow = root;
                 }
                 wchar_t hitClass[256] = {};
                 if (hitWindow) GetClassNameW(hitWindow, hitClass, 256);
+                wchar_t rawClass[256] = {};
+                if (rawHit && rawHit != hitWindow) GetClassNameW(rawHit, rawClass, 256);
+
+                bool isTrayOrTaskbarTarget = isSystemTrayOrTaskbar(hitClass) || isSystemTrayOrTaskbar(rawClass);
+                if (!isTrayOrTaskbarTarget && rawHit) {
+                    HWND cur = rawHit;
+                    while (cur && cur != hitWindow) {
+                        wchar_t curCls[256] = {};
+                        GetClassNameW(cur, curCls, 256);
+                        if (isSystemTrayOrTaskbar(curCls)) {
+                            isTrayOrTaskbarTarget = true;
+                            break;
+                        }
+                        const HWND parent = GetAncestor(cur, GA_PARENT);
+                        if (!parent || parent == cur) break;
+                        cur = parent;
+                    }
+                }
 
                 const HWND searchWindow = FindWindowW(L"EasyTools_SearchWindow", nullptr);
                 bool inSearchBounds = false;
@@ -176,6 +195,7 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                     hitClass, (mods & MOUSE_MOD_SHIFT) != 0) || ((mods & MOUSE_MOD_SHIFT) != 0 && inSearchBounds);
                 if (gestureEnabled &&
                     !nativeSearchMenu &&
+                    !isTrayOrTaskbarTarget &&
                     !m_triggerButtonDown.load(std::memory_order_relaxed) &&
                     (mode == TriggerMode::RightOnly || mode == TriggerMode::Both || mode == TriggerMode::All)) {
                     m_activeTriggerDown.store(event.type, std::memory_order_relaxed);
@@ -186,7 +206,7 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
                     m_cachedIsTopEdge = event.isTopEdge;
                     shouldCapture = true;
                 }
-                if (nativeSearchMenu) {
+                if (nativeSearchMenu || isTrayOrTaskbarTarget) {
                     m_activeTriggerDown.store(MouseEventType::Move, std::memory_order_relaxed);
                     m_triggerButtonDown.store(false, std::memory_order_release);
                     shouldCapture = false;

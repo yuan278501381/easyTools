@@ -379,6 +379,15 @@ TEST(GestureInputPolicyTest, EasyToolsUiAndOverlayClassNames) {
     EXPECT_TRUE(isGesturePassThroughClassName(L"EasyTools_GestureOverlay"));
     EXPECT_TRUE(isGesturePassThroughClassName(L"EasyTools_ToastOverlay"));
     EXPECT_FALSE(isGesturePassThroughClassName(L"EasyTools_SettingsWindow"));
+    EXPECT_TRUE(isSystemTrayOrTaskbar(L"Shell_TrayWnd"));
+    EXPECT_TRUE(isSystemTrayOrTaskbar(L"Shell_SecondaryTrayWnd"));
+    EXPECT_TRUE(isSystemTrayOrTaskbar(L"TrayNotifyWnd"));
+    EXPECT_TRUE(isSystemTrayOrTaskbar(L"NotifyIconOverflowWindow"));
+    EXPECT_TRUE(isSystemTrayOrTaskbar(L"TopLevelWindowForOverflowXamlIsland"));
+    EXPECT_FALSE(isSystemTrayOrTaskbar(L"Chrome_WidgetWin_1"));
+    EXPECT_FALSE(isSystemTrayOrTaskbar(L"CabinetWClass"));
+    EXPECT_FALSE(isSystemTrayOrTaskbar(L"EasyTools_SettingsWindow"));
+    EXPECT_FALSE(isSystemTrayOrTaskbar(L""));
     EXPECT_TRUE(gestureHitTestShouldSkipCandidate(false, false, true));
     EXPECT_TRUE(gestureHitTestShouldSkipCandidate(true, true, true));
     EXPECT_TRUE(gestureHitTestShouldSkipCandidate(true, false, false));

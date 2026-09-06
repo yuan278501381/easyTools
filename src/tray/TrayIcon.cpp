@@ -7,6 +7,14 @@
 #include "core/config/ConfigManager.h"
 #include "core/utils/WinUtils.h"
 #include "ui/TrayWindow.h"
+#include <windowsx.h>
+
+#ifndef GET_X_LPARAM
+#define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+#ifndef GET_Y_LPARAM
+#define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
 
 namespace easy::tray {
 
@@ -194,10 +202,19 @@ void TrayIcon::setGesturePaused(bool paused) {
 }
 
 void TrayIcon::handleMessage(WPARAM wParam, LPARAM lParam) {
-    (void)wParam;
     UINT msg = LOWORD(lParam);
 
     switch (msg) {
+        case WM_CONTEXTMENU: {
+            // NOTIFYICON_VERSION_4 现代协议：右键单击触发 WM_CONTEXTMENU
+            // 鼠标物理坐标通过 wParam 传递 (X: LOWORD, Y: HIWORD)
+            int x = GET_X_LPARAM(wParam);
+            int y = GET_Y_LPARAM(wParam);
+            showContextMenu(x, y);
+            break;
+        }
+
+        case NIN_SELECT:
         case WM_LBUTTONUP:
             // 左键单击：若托盘菜单已处于打开状态，则平滑收起；否则不弹出右键菜单
             if (easy::ui::TrayWindow::instance().isVisible()) {
@@ -205,8 +222,9 @@ void TrayIcon::handleMessage(WPARAM wParam, LPARAM lParam) {
             }
             break;
 
+        case NIN_KEYSELECT:
         case WM_LBUTTONDBLCLK:
-            // 左键双击：直接唤起主设置窗口
+            // 键盘回车选择或鼠标双击：直接唤起主设置窗口
             if (easy::ui::TrayWindow::instance().isVisible()) {
                 easy::ui::TrayWindow::instance().hide();
             }
@@ -214,7 +232,7 @@ void TrayIcon::handleMessage(WPARAM wParam, LPARAM lParam) {
             break;
 
         case WM_RBUTTONUP:
-            // 右键单击：弹出托盘快捷菜单
+            // 旧版协议右键单击兼容保底
             showContextMenu();
             break;
 
@@ -223,14 +241,49 @@ void TrayIcon::handleMessage(WPARAM wParam, LPARAM lParam) {
     }
 }
 
-void TrayIcon::showContextMenu() {
-    POINT pt;
-    GetCursorPos(&pt);
-
+void TrayIcon::showContextMenu(int x, int y) {
     // 如果托盘卡片当前正处于激活显示状态，再次点击托盘图标时执行平滑收起（Toggle）
     if (easy::ui::TrayWindow::instance().isVisible()) {
         easy::ui::TrayWindow::instance().hide();
         return;
+    }
+
+    POINT pt{ x, y };
+    bool validCoords = false;
+    if (x != -1 || y != -1) {
+        if (MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != nullptr) {
+            validCoords = true;
+        }
+    }
+
+    if (!validCoords) {
+        bool resolved = false;
+        // 优先自适应定位在系统托盘图标矩形中心
+        if (m_hwnd) {
+            RECT rc{};
+            NOTIFYICONIDENTIFIER nidId{};
+            nidId.cbSize = sizeof(NOTIFYICONIDENTIFIER);
+            nidId.hWnd = m_hwnd;
+            nidId.uID = m_nid.uID;
+            if (SUCCEEDED(Shell_NotifyIconGetRect(&nidId, &rc))) {
+                POINT iconCenter{ (rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2 };
+                if (MonitorFromPoint(iconCenter, MONITOR_DEFAULTTONULL) != nullptr) {
+                    pt = iconCenter;
+                    resolved = true;
+                }
+            }
+        }
+        // 兜底尝试当前光标物理位置
+        if (!resolved) {
+            if (GetCursorPos(&pt) && MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != nullptr) {
+                resolved = true;
+            }
+        }
+        // 终极保底：主显示器右下角安全区域
+        if (!resolved) {
+            pt.x = GetSystemMetrics(SM_CXSCREEN) - 100;
+            pt.y = GetSystemMetrics(SM_CYSCREEN) - 100;
+        }
     }
 
     // 如果用户按住 Shift 键右键，直接呼出零延迟 Windows 原生上下文菜单

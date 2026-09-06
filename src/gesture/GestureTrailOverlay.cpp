@@ -956,7 +956,6 @@ bool GestureTrailOverlay::createOverlayWindow(HINSTANCE hInstance) {
     DwmSetWindowAttribute(m_hwnd, DWMWA_TRANSITIONS_FORCEDISABLED,
                           &disableTransitions, sizeof(disableTransitions));
     SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
-    SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
     // HWND 需要非零尺寸才能创建；追踪表面从 0 开始，避免把虚拟屏左上角的 256×256
     // 占位框并进第一笔轨迹，把覆盖层钉死在屏幕角落。
     m_width = 0;
@@ -985,7 +984,6 @@ bool GestureTrailOverlay::createOverlayWindow(HINSTANCE hInstance) {
         DwmSetWindowAttribute(m_toastHwnd, DWMWA_TRANSITIONS_FORCEDISABLED,
                               &disableTransitions, sizeof(disableTransitions));
         SetWindowDisplayAffinity(m_toastHwnd, WDA_NONE);
-        SetLayeredWindowAttributes(m_toastHwnd, 0, 255, LWA_ALPHA);
         ShowWindow(m_toastHwnd, SW_HIDE);
     } else {
         LOG_WARN("创建手势结果卡片窗口失败，轨迹仍可绘制");
