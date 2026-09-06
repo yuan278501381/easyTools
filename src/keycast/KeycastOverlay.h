@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
+#include "core/hotkey/KeyTranslator.h"
 
 namespace easy::keycast {
 
@@ -75,6 +76,8 @@ public:
     
     // push a new keystroke combination to display
     void pushKey(const std::string& keyStr);
+    void pushKey(const easy::core::KeycastKeyInfo& keyInfo);
+    void pushKey(const std::vector<std::string>& tokens, const std::string& rawKey);
 
     /// 获取配置
     KeycastSettings getSettings() const;

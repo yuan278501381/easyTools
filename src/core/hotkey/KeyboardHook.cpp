@@ -67,6 +67,11 @@ void KeyboardHook::setKeycastCallback(std::function<void(const std::string&)> cb
     m_keycastCallback = std::move(cb);
 }
 
+void KeyboardHook::setKeycastKeyInfoCallback(std::function<void(const KeycastKeyInfo&)> cb) {
+    std::lock_guard lock(m_callbackMutex);
+    m_keycastKeyInfoCallback = std::move(cb);
+}
+
 void KeyboardHook::setKeyInterceptor(std::function<bool(DWORD vkCode, WPARAM wParam)> interceptor) {
     std::lock_guard lock(m_callbackMutex);
     m_keyInterceptor = std::move(interceptor);
@@ -122,13 +127,15 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 }
 
                 // --- 广义组合键回显与修饰键状态机 ---
+                std::function<void(const KeycastKeyInfo&)> keycastKeyInfoCallback;
                 std::function<void(const std::string&)> keycastCallback;
                 {
                     std::lock_guard lock(self.m_callbackMutex);
+                    keycastKeyInfoCallback = self.m_keycastKeyInfoCallback;
                     keycastCallback = self.m_keycastCallback;
                 }
 
-                if (keycastCallback) {
+                if (keycastKeyInfoCallback || keycastCallback) {
                     std::string filterMode = easy::core::ConfigManager::instance().get<std::string>(
                         "/keycast/filterMode", "");
                     if (filterMode.empty()) {
@@ -140,17 +147,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                         "/keycast/includeFunctionKeys", false);
 
                     DWORD vk = data->vkCode;
-                    bool isMod = (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
-                                  vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU ||
-                                  vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
-                                  vk == VK_LWIN || vk == VK_RWIN);
-
-                    bool isFunctionalKey = (vk >= VK_F1 && vk <= VK_F24) ||
-                                           (vk == VK_ESCAPE || vk == VK_TAB || vk == VK_RETURN || vk == VK_BACK ||
-                                            vk == VK_DELETE || vk == VK_INSERT || vk == VK_HOME || vk == VK_END ||
-                                            vk == VK_PRIOR || vk == VK_NEXT || vk == VK_CAPITAL || vk == VK_SNAPSHOT ||
-                                            vk == VK_PAUSE || vk == VK_SCROLL || vk == VK_LEFT || vk == VK_UP ||
-                                            vk == VK_RIGHT || vk == VK_DOWN || vk == VK_SPACE);
+                    bool isMod = KeyTranslator::isModifierKey(vk);
 
                     bool hasCtrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
                     bool hasAlt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
@@ -175,59 +172,29 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 }
                             }
 
-                            bool isComboWithModifier = (hasCtrl || hasAlt || hasWin || hasShift);
-                            bool isLetter = (vk >= 0x41 && vk <= 0x5A);
-                            bool isOnlyShift = hasShift && !hasCtrl && !hasAlt && !hasWin;
-
-                            bool shouldDisplay = false;
-                            if (filterMode == "all_keys") {
-                                shouldDisplay = true;
-                            } else {
-                                // 智能大写打字过滤：仅按住 Shift 连续打字母（如打 HOME）视为常规大写输入，不作为组合快捷键回显
-                                if (isOnlyShift && isLetter) {
-                                    shouldDisplay = false;
-                                } else if (isComboWithModifier) {
-                                    shouldDisplay = true;
-                                } else if (isFunctionalKey && includeFunctionKeys) {
-                                    shouldDisplay = true;
-                                }
+                            UINT scanCode = data->scanCode;
+                            if (data->flags & LLKHF_EXTENDED) {
+                                scanCode |= 0xE000;
                             }
 
-                            if (shouldDisplay) {
-                                char keyName[64] = {0};
-                                UINT scanCode = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
-                                switch (vk) {
-                                    case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN:
-                                    case VK_PRIOR: case VK_NEXT: case VK_END: case VK_HOME:
-                                    case VK_INSERT: case VK_DELETE: case VK_DIVIDE:
-                                    case VK_NUMLOCK:
-                                        scanCode |= KF_EXTENDED;
-                                        break;
-                                }
+                            // 权威按键意图裁决与 Shift 折叠
+                            KeycastKeyInfo info = KeyTranslator::resolveKeycastEvent(
+                                vk,
+                                scanCode,
+                                hasCtrl,
+                                hasAlt,
+                                hasShift,
+                                hasWin,
+                                filterMode,
+                                includeFunctionKeys
+                            );
 
-                                std::string mainKey;
-                                if (GetKeyNameTextA(scanCode << 16, keyName, sizeof(keyName)) > 0) {
-                                    mainKey = keyName;
+                            if (info.shouldDisplay) {
+                                if (keycastKeyInfoCallback) {
+                                    keycastKeyInfoCallback(info);
                                 }
-                                if (vk == VK_SPACE) mainKey = "Space";
-
-                                // 组合键格式化 (标准规范顺序: Ctrl + Win + Alt + Shift + 主键)
-                                std::vector<std::string> combo;
-                                if (hasCtrl && mainKey != "Ctrl") combo.push_back("Ctrl");
-                                if (hasWin && mainKey != "Win") combo.push_back("Win");
-                                if (hasAlt && mainKey != "Alt") combo.push_back("Alt");
-                                if (hasShift && mainKey != "Shift" && !(filterMode == "all_keys" && isOnlyShift && isLetter)) {
-                                    combo.push_back("Shift");
-                                }
-                                if (!mainKey.empty()) combo.push_back(mainKey);
-
-                                if (!combo.empty()) {
-                                    std::string display;
-                                    for (size_t i = 0; i < combo.size(); ++i) {
-                                        if (i > 0) display += " + ";
-                                        display += combo[i];
-                                    }
-                                    keycastCallback(display);
+                                if (keycastCallback) {
+                                    keycastCallback(info.rawKey);
                                 }
                             }
                         }
@@ -254,7 +221,19 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 if (targetVk == VK_LMENU || targetVk == VK_RMENU || targetVk == VK_MENU) modName = "Alt";
                                 else if (targetVk == VK_LSHIFT || targetVk == VK_RSHIFT || targetVk == VK_SHIFT) modName = "Shift";
                                 else if (targetVk == VK_LWIN || targetVk == VK_RWIN) modName = "Win";
-                                keycastCallback(modName);
+
+                                KeycastKeyInfo modInfo;
+                                modInfo.tokens = {modName};
+                                modInfo.rawKey = modName;
+                                modInfo.isShortcut = false;
+                                modInfo.shouldDisplay = true;
+
+                                if (keycastKeyInfoCallback) {
+                                    keycastKeyInfoCallback(modInfo);
+                                }
+                                if (keycastCallback) {
+                                    keycastCallback(modName);
+                                }
                             }
                         }
                     }

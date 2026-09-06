@@ -23,12 +23,28 @@ constexpr UINT START_ANIMATION_MESSAGE = WM_APP + 1;
 
 std::vector<std::string> splitTokens(const std::string& str) {
     std::vector<std::string> tokens;
-    std::string token;
-    std::istringstream tokenStream(str);
-    while (tokenStream >> token) {
-        if (token != "+") {
-            tokens.push_back(token);
+    if (str.empty()) return tokens;
+
+    size_t start = 0;
+    const std::string delim = " + ";
+    size_t pos = 0;
+    while ((pos = str.find(delim, start)) != std::string::npos) {
+        std::string token = str.substr(start, pos - start);
+        size_t first = token.find_first_not_of(" \t\r\n");
+        size_t last = token.find_last_not_of(" \t\r\n");
+        if (first != std::string::npos && last != std::string::npos) {
+            tokens.push_back(token.substr(first, last - first + 1));
         }
+        start = pos + delim.length();
+    }
+    std::string lastToken = str.substr(start);
+    size_t first = lastToken.find_first_not_of(" \t\r\n");
+    size_t last = lastToken.find_last_not_of(" \t\r\n");
+    if (first != std::string::npos && last != std::string::npos) {
+        tokens.push_back(lastToken.substr(first, last - first + 1));
+    }
+    if (tokens.empty() && !str.empty()) {
+        tokens.push_back(str);
     }
     return tokens;
 }
@@ -626,6 +642,17 @@ bool KeycastOverlay::updatePlacement() {
 
 void KeycastOverlay::pushKey(const std::string& keyStr) {
     if (keyStr.empty()) return;
+    pushKey(splitTokens(keyStr), keyStr);
+}
+
+void KeycastOverlay::pushKey(const easy::core::KeycastKeyInfo& keyInfo) {
+    if (keyInfo.tokens.empty() && keyInfo.rawKey.empty()) return;
+    std::string rawKey = keyInfo.rawKey.empty() ? easy::core::KeyTranslator::formatCombo(keyInfo.tokens) : keyInfo.rawKey;
+    pushKey(keyInfo.tokens, rawKey);
+}
+
+void KeycastOverlay::pushKey(const std::vector<std::string>& tokens, const std::string& rawKey) {
+    if (tokens.empty() && rawKey.empty()) return;
 
     KeycastSettings settings = getSettings();
     if (!settings.enabled || !settings.showKeyboard) return;
@@ -656,7 +683,7 @@ void KeycastOverlay::pushKey(const std::string& keyStr) {
         }
     }
 
-    LOG_DEBUG("KeycastOverlay pushKey: {}", keyStr);
+    LOG_DEBUG("KeycastOverlay pushKey: rawKey={}, tokensCount={}", rawKey, tokens.size());
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -664,8 +691,8 @@ void KeycastOverlay::pushKey(const std::string& keyStr) {
         const bool isRecent = (now - m_lastGlobalPushTime <= static_cast<uint64_t>(settings.mergeTimeoutMs));
 
         KeycastItem item;
-        item.rawKey = keyStr;
-        item.tokens = splitTokens(keyStr);
+        item.rawKey = rawKey;
+        item.tokens = tokens.empty() ? splitTokens(rawKey) : tokens;
         item.pushTime = now;
         item.opacity = 0.0f;
 
@@ -684,7 +711,7 @@ void KeycastOverlay::pushKey(const std::string& keyStr) {
         if (settings.mergeRecentKeys && isRecent && !m_rows.empty() && !wouldExceedMidline) {
             // 同一操作时间段且未超屏幕中线：追加到当前排末尾
             auto& currentRow = m_rows.back();
-            if (!currentRow.items.empty() && currentRow.items.back().rawKey == keyStr) {
+            if (!currentRow.items.empty() && currentRow.items.back().rawKey == rawKey) {
                 auto& targetItem = currentRow.items.back();
                 targetItem.repeatCount++;
                 targetItem.pushTime = now;
@@ -784,7 +811,7 @@ void KeycastOverlay::pushKey(const std::string& keyStr) {
             }
         }
 
-        m_lastRawKey = keyStr;
+        m_lastRawKey = rawKey;
         m_lastGlobalPushTime = now;
     }
 

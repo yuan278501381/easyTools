@@ -153,6 +153,7 @@ using namespace easy::gesture;
 #include "test_ui_lifecycle.inc"
 #include "test_dialog.inc"
 #include "test_remote.inc"
+#include "test_keycast_translator.inc"
 
 TEST(UiThreadJoinTest, PumpsCrossThreadSentMessagesDuringShutdown) {
     HWND window = CreateWindowExW(

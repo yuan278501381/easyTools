@@ -24,6 +24,9 @@ public:
             return false;
         }
 
+        easy::core::KeyboardHook::instance().setKeycastKeyInfoCallback([](const easy::core::KeycastKeyInfo& info) {
+            KeycastOverlay::instance().pushKey(info);
+        });
         easy::core::KeyboardHook::instance().setKeycastCallback([](const std::string& sequence) {
             KeycastOverlay::instance().pushKey(sequence);
         });
@@ -158,6 +161,7 @@ public:
             m_themeSubscription = 0;
         }
         easy::core::MessageBridge::instance().unregisterHandlersByPrefix("keycast.");
+        easy::core::KeyboardHook::instance().setKeycastKeyInfoCallback(nullptr);
         easy::core::KeyboardHook::instance().setKeycastCallback(nullptr);
         
         // Cleanup Overlay UI
